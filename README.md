@@ -40,8 +40,22 @@ Inside each dataset folder, you will find the following subdirectories:
   ```
   src/1_create_ml_dataset.py
   ```
+  
+### `jupyter/` – Notebooks for Computing Metrics and Generating Figures
 
----
+This directory contains four Jupyter notebooks used to compute performance metrics—such as the primal integral—and to compare different model architectures. The notebooks included are:
+
+* **`architectures_comparison.ipynb`**
+  Compares the Cross-Entropy loss across multiple architectures and datasets. It also generates a figure with line plots for each dataset.
+
+* **`primal_integral_and_statistical_test.ipynb`**
+   Computes the primal integral on the test partitions of a dataset for different architecture configurations. It then performs pairwise Wilcoxon signed-rank tests for all configuration pairs and generates a file named `test_results_DATASET_NAME_statistical_ablation.csv` containing the results.
+
+* **`statistical_ranking.ipynb`**
+  Uses the `test_results_DATASET_NAME_statistical_ablation.csv` file to rank configurations from worst to best. This helps assess whether a transitive order exists among the configurations.
+
+* **`validation_results_update.ipynb`**
+  Helps to perform the validation of the step 4 (explained below). It computes the primal integral on the validation partitions for a given dataset and configuration on all the trials, then updates `results.csv` with the corresponding results for each one.
 
 ### `src/` – Source code for the pipeline
 
@@ -95,7 +109,7 @@ dataset/DATASET_NAME/instance/
 Run the backbone extraction script:
 
 ```bash
-./0_run_backbone_extraction.sh /dataset/DATASET_NAME/instance '*.opb'
+./run_backbone_extraction.sh /path/to/guroback /dataset/DATASET_NAME/instance '*.opb'
 ```
 
 You may want to skip backbone extraction for test instances, since their backbones will not be used.
@@ -256,11 +270,10 @@ Inside this folder:
 * Each subfolder corresponds to a different parameter configuration.
 * `results.csv` lists all parameter configurations and their `objective_value` column (to be filled after running a solver on each instance).
 
-The best parameter configuration is selected based on the **mean of the objective values** (typically the mean primal integral).
+The best parameter configuration is selected based on the best `objective_value` column (in our experiments we used the mean primal integral).
 
-After filling in the `objective_value` column, you can re-run the same script with the same parameters.
-It will create new trials that can again be evaluated.
-This iterative process can be repeated multiple times — in our experiments, we typically run it **four times** (first creating 30 random trials, then 10 guided trials in each subsequent run).
+The `objective_value` column can be filled with the mean primal integral using the jupyter notebook `jupyter/validation_results_update.ipynb`. After filling in the `objective_value` column, you can re-run the same script (`4_create_trust_region.py`) with the same parameters. It will create new trials that can again be evaluated.
+This iterative process can be repeated multiple times — in our experiments, we run it **four times** (first creating 30 random trials, then 10 guided trials in each subsequent run).
 
 ---
 
