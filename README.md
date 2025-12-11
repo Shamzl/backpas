@@ -1,3 +1,7 @@
+# BackPaS
+
+Backbone-based Predict-and-Search (**BackPaS**) is a framework that integrates Machine Learning into the solution process of optimization problems, using a *predict-and-search* approach for Pseudo-Boolean Optimization (PBO) instances with backbone training.
+
 ## Repository Structure
 
 ### `dataset/` – Datasets used in the pipeline
