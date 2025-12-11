@@ -1,1 +1,1 @@
-This folder should contain subfolders foreach dataset. Each one should contain subfolders foreach experiment
+This folder should contain subfolders foreach dataset.
