@@ -1,15 +1,17 @@
 # Core dependencies
 networkx>=2.8
-numpy>=1.22
+numpy<2
 scipy>=1.8
 pandas>=1.4
 
 # Machine Learning
-torch>=1.10
+torch>=2.0
+torch_geometric
 scikit-learn>=1.1
 
 # Optimization
 gurobipy==12.0.0
+pyscipopt
 
 # Utilities
 tqdm>=4.64
