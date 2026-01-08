@@ -1,0 +1,16 @@
+# Core dependencies
+networkx>=2.8
+numpy>=1.22
+scipy>=1.8
+pandas>=1.4
+
+# Machine Learning
+torch>=1.10
+scikit-learn>=1.1
+
+# Optimization
+gurobipy>=9.5
+
+# Utilities
+tqdm>=4.64
+matplotlib>=3.5
