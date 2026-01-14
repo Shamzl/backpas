@@ -9,6 +9,10 @@ Este script ejecuta Gurobi sobre instancias MIS y recopila métricas como:
 - Nodos explorados
 - Primal integral (aproximado)
 
+Modos de ejecución:
+- BASELINE: Gurobi sin ayuda (por defecto)
+- BACKPAS: Gurobi + Trust Region temporal (--backpas)
+
 """
 
 import argparse
@@ -17,10 +21,28 @@ from gurobipy import GRB
 import os
 import csv
 import time
+import sys
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 import json
+import math
+
+# Agregar src/ al path para importar módulos BACKPAS
+REPO_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+# Importaciones opcionales para modo BACKPAS
+BACKPAS_AVAILABLE = False
+try:
+    import torch
+    import torch.nn.functional as F
+    from GCN import BackbonePredictor, GraphBackboneDataset
+    from constants import LITERALS_GRAPH, VARIABLES_GRAPH
+    from get_bipartite_graph import get_standard_bipartite_graph
+    BACKPAS_AVAILABLE = True
+except ImportError as e:
+    pass  # BACKPAS no disponible, solo modo baseline
 
 
 class GurobiMISExperiment:
@@ -31,7 +53,16 @@ class GurobiMISExperiment:
         threads: int = 1,
         time_limit: float = 3600,
         mip_gap: float = 0.0,
-        log_dir: Optional[str] = None
+        log_dir: Optional[str] = None,
+        # Parámetros BACKPAS
+        use_backpas: bool = False,
+        model_path: Optional[str] = None,
+        trust_region_time: float = 300,
+        threshold: float = 0.7,
+        alpha: float = 0.0,
+        graph_type: str = "literals",
+        num_layers: int = 8,
+        layer_type: str = "GTR"
     ):
         """
         Inicializa la configuración del experimento.
@@ -41,16 +72,130 @@ class GurobiMISExperiment:
             time_limit: Límite de tiempo en segundos (default: 3600 = 1 hora)
             mip_gap: Gap de optimalidad objetivo (default: 0.0 = óptimo exacto)
             log_dir: Directorio para logs de Gurobi
+            use_backpas: Si usar modo BACKPAS (default: False)
+            model_path: Ruta al modelo .pth (requerido si use_backpas=True)
+            trust_region_time: Tiempo en segundos para mantener trust region (default: 300)
+            threshold: Umbral θ para selección de variables (default: 0.7)
+            alpha: Parámetro α para tolerancia (default: 0.0)
+            graph_type: Tipo de grafo ('literals' o 'variables')
+            num_layers: Número de capas GNN (default: 8)
+            layer_type: Tipo de capa GNN (default: 'GTR')
         """
         self.threads = threads
         self.time_limit = time_limit
         self.mip_gap = mip_gap
         self.log_dir = log_dir
         
+        # Parámetros BACKPAS
+        self.use_backpas = use_backpas
+        self.model_path = model_path
+        self.trust_region_time = trust_region_time
+        self.threshold = threshold
+        self.alpha = alpha
+        self.graph_type = graph_type
+        self.num_layers = num_layers
+        self.layer_type = layer_type
+        
+        # Validación
+        if self.use_backpas:
+            if not BACKPAS_AVAILABLE:
+                raise RuntimeError("Modo BACKPAS requiere PyTorch y módulos BACKPAS instalados")
+            if not self.model_path:
+                raise ValueError("model_path es requerido cuando use_backpas=True")
+            if not os.path.exists(self.model_path):
+                raise FileNotFoundError(f"Modelo no encontrado: {self.model_path}")
+        
         # Para tracking del primal integral
         self.incumbent_history = []
-        self.best_bound_history = []
         
+        # Para BACKPAS: tracking de trust region
+        self.trust_region_removed = False
+        self.trust_region_constraints = []
+        self.trust_region_vars = []
+        
+    def _load_backpas_model(self):
+        """Carga el modelo BACKPAS para predicciones."""
+        if not BACKPAS_AVAILABLE:
+            raise RuntimeError("BACKPAS no disponible")
+        
+        device = "cpu"
+        graph_type_const = LITERALS_GRAPH if self.graph_type == "literals" else VARIABLES_GRAPH
+        
+        model = BackbonePredictor(
+            graph_type=graph_type_const,
+            num_layers=self.num_layers,
+            layer_type=self.layer_type,
+            use_literals_message=False
+        ).to(device)
+        
+        model.load_state_dict(torch.load(self.model_path, map_location=device))
+        model.eval()
+        
+        return model
+    
+    def _get_backbone_predictions(self, instance_path: str, model) -> Tuple:
+        """
+        Obtiene predicciones de backbone del modelo GNN.
+        
+        Returns:
+            (pred_probs, v_map): Probabilidades y mapeo de variables
+        """
+        device = next(model.parameters()).device
+        graph_type_const = LITERALS_GRAPH if self.graph_type == "literals" else VARIABLES_GRAPH
+        
+        # Construir grafo bipartito
+        A, v_map, l_nodes, c_nodes = get_standard_bipartite_graph(instance_path, graph_type_const)
+        constraint_features, edge_indices, edge_features, variable_features = \
+            GraphBackboneDataset.get_graph_components(A, l_nodes, c_nodes)
+        
+        # Predicción
+        with torch.no_grad():
+            BD = model(
+                constraint_features.float().to(device),
+                edge_indices.long().to(device),
+                edge_features.float().to(device),
+                variable_features.float().to(device),
+            )
+            pred_probs = F.softmax(BD, dim=1).cpu().squeeze()
+        
+        return pred_probs, v_map
+    
+    def _compute_trust_region_params(self, pred_probs) -> Tuple:
+        """
+        Calcula los parámetros de la trust region basados en predicciones.
+        
+        Returns:
+            (selected_indices, assigned_classes, Delta)
+        """
+        P1 = pred_probs[:, 0]  # Probabilidad de clase 0
+        P2 = pred_probs[:, 1]  # Probabilidad de clase 1
+        
+        # Seleccionar variables con confianza >= threshold
+        selected_mask = (torch.max(P1, P2) > self.threshold)
+        selected_indices = torch.nonzero(selected_mask).squeeze(1)
+        
+        if selected_indices.numel() == 0:
+            raise RuntimeError("No se seleccionaron variables para trust region")
+        
+        # Determinar clase asignada
+        selected_pred_probs = pred_probs[selected_indices]
+        assigned_classes = torch.argmax(selected_pred_probs[:, :2], dim=1)
+        
+        # Calcular Delta (tolerancia adaptativa)
+        assigned_probabilities = selected_pred_probs[:, :2].max(dim=1)[0]
+        expected_errors = (1 - assigned_probabilities).sum().item()
+        
+        k_0 = (assigned_classes == 0).sum().item()
+        k_1 = (assigned_classes == 1).sum().item()
+        
+        if self.alpha <= 0:
+            Delta = expected_errors * (1 + self.alpha)
+        else:
+            Delta = (k_0 + k_1 - expected_errors) * self.alpha + expected_errors
+        Delta = math.ceil(Delta)
+        
+        return selected_indices, assigned_classes, Delta, k_0, k_1
+    
     def _callback(self, model, where):
         """Callback para capturar el progreso durante la optimización."""
         if where == GRB.Callback.MIP:
@@ -65,8 +210,38 @@ class GurobiMISExperiment:
                     'incumbent': obj_best,
                     'bound': obj_bound
                 })
+                
+                # BACKPAS: Quitar trust region después del tiempo especificado
+                if self.use_backpas and not self.trust_region_removed:
+                    if runtime >= self.trust_region_time:
+                        print(f"\n[BACKPAS] Tiempo {runtime:.2f}s alcanzado. Quitando trust region...")
+                        self._remove_trust_region(model)
+                        self.trust_region_removed = True
+                        print(f"[BACKPAS] Trust region eliminada. Gurobi continúa en espacio completo.")
             except:
                 pass
+    
+    def _remove_trust_region(self, model):
+        """Elimina las restricciones de trust region del modelo Gurobi."""
+        # Obtener el modelo Gurobi desde el callback
+        gurobi_model = model.cbGetModel()
+        
+        # Eliminar restricciones de trust region
+        for constr in self.trust_region_constraints:
+            try:
+                gurobi_model.remove(constr)
+            except:
+                pass  # La restricción puede ya no existir
+        
+        # Eliminar variables delta
+        for var in self.trust_region_vars:
+            try:
+                gurobi_model.remove(var)
+            except:
+                pass
+        
+        # Actualizar el modelo
+        gurobi_model.update()
     
     def run_instance(self, instance_path: str, verbose: bool = True) -> Dict:
         """
@@ -80,17 +255,89 @@ class GurobiMISExperiment:
             Diccionario con métricas del experimento
         """
         instance_name = Path(instance_path).stem
+        method_name = "BACKPAS" if self.use_backpas else "BASELINE"
         
         if verbose:
             print(f"\n{'='*60}")
-            print(f"Ejecutando: {instance_name}")
+            print(f"[{method_name}] Ejecutando: {instance_name}")
             print(f"{'='*60}")
         
-        # Resetear historial
+        # Resetear historial y flags
         self.incumbent_history = []
+        self.trust_region_removed = False
+        self.trust_region_constraints = []
+        self.trust_region_vars = []
         
         # Crear modelo
         model = gp.read(instance_path)
+        
+        # Modo BACKPAS: Agregar trust region
+        trust_region_info = {}
+        if self.use_backpas:
+            if verbose:
+                print(f"[BACKPAS] Cargando modelo GNN...")
+            ml_model = self._load_backpas_model()
+            
+            if verbose:
+                print(f"[BACKPAS] Generando predicciones...")
+            pred_probs, v_map = self._get_backbone_predictions(instance_path, ml_model)
+            
+            if verbose:
+                print(f"[BACKPAS] Construyendo trust region...")
+            selected_indices, assigned_classes, Delta, k_0, k_1 = \
+                self._compute_trust_region_params(pred_probs)
+            
+            # Crear mapeo índice -> nombre de variable
+            index_to_var_name = {v_map[var_name]: var_name for var_name in v_map}
+            
+            # Crear mapeo nombre -> objeto variable de Gurobi
+            gurobi_var_map = {var.VarName: var for var in model.getVars()}
+            
+            # Agregar restricciones de trust region
+            for j, original_var_idx in enumerate(selected_indices):
+                tar_var_name = index_to_var_name[original_var_idx.item()]
+                delta_var = model.addVar(name=f"delta_{tar_var_name}", vtype=GRB.BINARY)
+                self.trust_region_vars.append(delta_var)
+                
+                predicted_class = assigned_classes[j].item()
+                
+                if predicted_class == 0:  # Predicción: x = 0
+                    constr = model.addConstr(gurobi_var_map[tar_var_name] <= delta_var,
+                                            name=f"tr_{tar_var_name}_0")
+                elif predicted_class == 1:  # Predicción: x = 1
+                    constr = model.addConstr(1 - gurobi_var_map[tar_var_name] <= delta_var,
+                                            name=f"tr_{tar_var_name}_1")
+                else:
+                    raise ValueError(f"Clase inválida: {predicted_class}")
+                
+                self.trust_region_constraints.append(constr)
+            
+            # Agregar restricción de suma de deltas
+            if len(self.trust_region_vars) > 0:
+                delta_sum_constr = model.addConstr(
+                    sum(self.trust_region_vars) <= Delta,
+                    name="tr_delta_sum"
+                )
+                self.trust_region_constraints.append(delta_sum_constr)
+            
+            model.update()
+            
+            trust_region_info = {
+                'k_0': k_0,
+                'k_1': k_1,
+                'Delta': Delta,
+                'n_selected': len(selected_indices),
+                'threshold': self.threshold,
+                'alpha': self.alpha,
+                'trust_region_time': self.trust_region_time
+            }
+            
+            if verbose:
+                print(f"[BACKPAS] Trust region creada:")
+                print(f"  - Variables fijadas a 0: {k_0}")
+                print(f"  - Variables fijadas a 1: {k_1}")
+                print(f"  - Tolerancia (Δ): {Delta}")
+                print(f"  - Tiempo de trust region: {self.trust_region_time}s")
         
         # Configurar parámetros
         model.Params.Threads = self.threads
@@ -100,7 +347,8 @@ class GurobiMISExperiment:
         # Configurar log si se especificó directorio
         if self.log_dir:
             os.makedirs(self.log_dir, exist_ok=True)
-            log_file = os.path.join(self.log_dir, f"{instance_name}.log")
+            suffix = "_backpas" if self.use_backpas else "_baseline"
+            log_file = os.path.join(self.log_dir, f"{instance_name}{suffix}.log")
             model.Params.LogFile = log_file
         
         if not verbose:
@@ -115,6 +363,7 @@ class GurobiMISExperiment:
         metrics = {
             'instance_name': instance_name,
             'instance_path': instance_path,
+            'method': 'backpas' if self.use_backpas else 'baseline',
             'status': model.Status,
             'status_name': self._status_to_string(model.Status),
             'runtime': end_time - start_time,
@@ -128,8 +377,14 @@ class GurobiMISExperiment:
             'obj_bound': model.ObjBound,
             'threads': self.threads,
             'time_limit': self.time_limit,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            # Información BACKPAS
+            'trust_region_removed': self.trust_region_removed if self.use_backpas else None,
         }
+        
+        # Agregar información de trust region si aplica
+        if self.use_backpas:
+            metrics.update(trust_region_info)
         
         # Calcular primal integral aproximado
         if len(self.incumbent_history) > 0:
@@ -213,7 +468,15 @@ def run_batch_experiment(
     time_limit: float = 3600,
     mip_gap: float = 0.0,
     log_dir: Optional[str] = None,
-    pattern: str = "*.lp"
+    pattern: str = "*.lp",
+    use_backpas: bool = False,
+    model_path: Optional[str] = None,
+    trust_region_time: float = 300,
+    threshold: float = 0.7,
+    alpha: float = 0.0,
+    graph_type: str = "literals",
+    num_layers: int = 8,
+    layer_type: str = "GTR"
 ) -> List[Dict]:
     """
     Ejecuta experimentos sobre múltiples instancias.
@@ -226,6 +489,14 @@ def run_batch_experiment(
         mip_gap: Gap objetivo
         log_dir: Directorio para logs
         pattern: Patrón para filtrar archivos
+        use_backpas: Si usar modo BACKPAS
+        model_path: Ruta al modelo .pth
+        trust_region_time: Tiempo para mantener trust region
+        threshold: Umbral θ
+        alpha: Parámetro α
+        graph_type: Tipo de grafo
+        num_layers: Capas GNN
+        layer_type: Tipo de capa GNN
     
     Returns:
         Lista de diccionarios con métricas de cada instancia
@@ -239,15 +510,30 @@ def run_batch_experiment(
         print(f"No se encontraron archivos {pattern} en {instance_dir}")
         return []
     
-    print(f"\nEncontradas {len(instance_files)} instancias")
+    method_name = "BACKPAS" if use_backpas else "BASELINE"
+    print(f"\n{'='*60}")
+    print(f"EXPERIMENTO {method_name}")
+    print(f"{'='*60}")
+    print(f"Encontradas {len(instance_files)} instancias")
     print(f"Configuración: threads={threads}, time_limit={time_limit}s, mip_gap={mip_gap}")
+    if use_backpas:
+        print(f"BACKPAS: trust_region_time={trust_region_time}s, threshold={threshold}, alpha={alpha}")
+    print(f"{'='*60}")
     
     # Crear experimento
     experiment = GurobiMISExperiment(
         threads=threads,
         time_limit=time_limit,
         mip_gap=mip_gap,
-        log_dir=log_dir
+        log_dir=log_dir,
+        use_backpas=use_backpas,
+        model_path=model_path,
+        trust_region_time=trust_region_time,
+        threshold=threshold,
+        alpha=alpha,
+        graph_type=graph_type,
+        num_layers=num_layers,
+        layer_type=layer_type
     )
     
     # Ejecutar cada instancia
@@ -276,12 +562,14 @@ def save_metrics_to_csv(metrics_list: List[Dict], output_path: str):
     if not metrics_list:
         return
     
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
     
     fieldnames = [
-        'instance_name', 'status_name', 'runtime', 'gurobi_runtime',
+        'instance_name', 'method', 'status_name', 'runtime', 'gurobi_runtime',
         'obj_val', 'obj_bound', 'mip_gap', 'n_nodes', 'n_solutions',
-        'n_vars', 'n_constrs', 'primal_integral', 'threads', 'time_limit', 'timestamp'
+        'n_vars', 'n_constrs', 'primal_integral', 'threads', 'time_limit', 
+        'trust_region_removed', 'k_0', 'k_1', 'Delta', 'n_selected',
+        'threshold', 'alpha', 'trust_region_time', 'timestamp'
     ]
     
     with open(output_path, 'w', newline='') as f:
@@ -292,22 +580,30 @@ def save_metrics_to_csv(metrics_list: List[Dict], output_path: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Ejecutar experimentos Gurobi sobre instancias MIS",
+        description="Ejecutar experimentos Gurobi sobre instancias MIS (BASELINE o BACKPAS)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos de uso:
-  # Ejecutar una sola instancia
-  python run_gurobi_experiment.py --instance ../instances/baseline/mis_500n_001.lp
+  # BASELINE - Ejecutar una sola instancia sin ayuda
+  python run_gurobi_experiment.py --instance ../instances/test/mis_50n_000.lp
   
-  # Ejecutar todas las instancias en un directorio
-  python run_gurobi_experiment.py --instance_dir ../instances/baseline --output_csv ../results/metrics/baseline_results.csv
+  # BASELINE - Ejecutar todas las instancias en un directorio
+  python run_gurobi_experiment.py --instance_dir ../instances/test --output_csv ../results/baseline.csv
   
-  # Con límite de tiempo de 30 minutos
-  python run_gurobi_experiment.py --instance_dir ../instances/baseline --time_limit 1800
+  # BACKPAS - Con trust region temporal (quitar después de 300s)
+  python run_gurobi_experiment.py \\
+      --instance ../instances/test/mis_50n_000.lp \\
+      --backpas \\
+      --model_path ../wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth \\
+      --trust_region_time 300 \\
+      --threshold 0.7 \\
+      --alpha 0.0 \\
+      --output_csv ../results/backpas.csv
   
-  # Comparar baseline vs backbone
-  python run_gurobi_experiment.py --instance_dir ../instances/baseline --output_csv ../results/metrics/baseline.csv
-  python run_gurobi_experiment.py --instance_dir ../instances/with_backbone --output_csv ../results/metrics/backbone.csv
+  # BACKPAS - Experimento completo comparando diferentes tiempos de trust region
+  python run_gurobi_experiment.py --instance_dir ../instances/test --backpas \\
+      --model_path ../wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth \\
+      --trust_region_time 60 --output_csv ../results/backpas_60s.csv
         """
     )
     
@@ -326,11 +622,30 @@ Ejemplos de uso:
     parser.add_argument("--mip_gap", type=float, default=0.0,
                         help="Gap de optimalidad objetivo (default: 0.0)")
     
+    # Modo BACKPAS
+    parser.add_argument("--backpas", action="store_true",
+                        help="Usar modo BACKPAS con trust region temporal")
+    parser.add_argument("--model_path", type=str,
+                        help="Ruta al modelo .pth (requerido si --backpas)")
+    parser.add_argument("--trust_region_time", type=float, default=300,
+                        help="Tiempo (segundos) para mantener trust region (default: 300)")
+    parser.add_argument("--threshold", type=float, default=0.7,
+                        help="Umbral θ para selección de variables (default: 0.7)")
+    parser.add_argument("--alpha", type=float, default=0.0,
+                        help="Parámetro α para tolerancia adaptativa (default: 0.0)")
+    parser.add_argument("--graph_type", type=str, default="literals",
+                        choices=["literals", "variables"],
+                        help="Tipo de grafo para GNN (default: literals)")
+    parser.add_argument("--num_layers", type=int, default=8,
+                        help="Número de capas GNN (default: 8)")
+    parser.add_argument("--layer_type", type=str, default="GTR",
+                        help="Tipo de capa GNN (default: GTR)")
+    
     # Salida
     parser.add_argument("--output_csv", type=str, default="../results/metrics/results.csv",
-                        help="Archivo CSV para resultados (default: ../results/metrics/results.csv)")
-    parser.add_argument("--log_dir", type=str, default="../results/logs",
-                        help="Directorio para logs de Gurobi (default: ../results/logs)")
+                        help="Archivo CSV para resultados")
+    parser.add_argument("--log_dir", type=str, default=None,
+                        help="Directorio para logs de Gurobi")
     
     args = parser.parse_args()
     
@@ -340,7 +655,15 @@ Ejemplos de uso:
             threads=args.threads,
             time_limit=args.time_limit,
             mip_gap=args.mip_gap,
-            log_dir=args.log_dir
+            log_dir=args.log_dir,
+            use_backpas=args.backpas,
+            model_path=args.model_path,
+            trust_region_time=args.trust_region_time,
+            threshold=args.threshold,
+            alpha=args.alpha,
+            graph_type=args.graph_type,
+            num_layers=args.num_layers,
+            layer_type=args.layer_type
         )
         metrics = experiment.run_instance(args.instance, verbose=True)
         
@@ -356,7 +679,15 @@ Ejemplos de uso:
             threads=args.threads,
             time_limit=args.time_limit,
             mip_gap=args.mip_gap,
-            log_dir=args.log_dir
+            log_dir=args.log_dir,
+            use_backpas=args.backpas,
+            model_path=args.model_path,
+            trust_region_time=args.trust_region_time,
+            threshold=args.threshold,
+            alpha=args.alpha,
+            graph_type=args.graph_type,
+            num_layers=args.num_layers,
+            layer_type=args.layer_type
         )
 
 

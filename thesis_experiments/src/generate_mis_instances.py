@@ -23,6 +23,7 @@ from typing import Optional
 def generate_erdos_renyi_graph(n_nodes: int, edge_probability: float, seed: Optional[int] = None) -> nx.Graph:
     """
     Genera un grafo aleatorio usando el modelo Erdős-Rényi.
+    link:https://academia-lab.com/enciclopedia/modelo-de-erdos-renyi/
     
     Args:
         n_nodes: Número de nodos del grafo
@@ -40,6 +41,7 @@ def generate_erdos_renyi_graph(n_nodes: int, edge_probability: float, seed: Opti
 def generate_barabasi_albert_graph(n_nodes: int, m_edges: int, seed: Optional[int] = None) -> nx.Graph:
     """
     Genera un grafo aleatorio usando el modelo Barabási-Albert (preferential attachment).
+    link:https://academia-lab.com/enciclopedia/modelo-barabasi-albert/
     
     Args:
         n_nodes: Número de nodos del grafo
