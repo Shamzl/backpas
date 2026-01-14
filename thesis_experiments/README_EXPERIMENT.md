@@ -47,13 +47,13 @@ python thesis_experiments/src/run_gurobi_experiment.py \
 ```bash
 # Una sola instancia con trust region de 5 minutos
 python thesis_experiments/src/run_gurobi_experiment.py \
-    --instance thesis_experiments/instances/test/mis_50n_000.lp \
+    --instance dataset/MIS/instance/train_easy_instance_338.lp \
     --backpas \
     --model_path wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth \
     --trust_region_time 300 \
     --threshold 0.7 \
     --alpha 0.0 \
-    --output_csv thesis_experiments/results/backpas_300s.csv \
+    --output_csv thesis_experiments/results/backpas_easy_instance_338s.csv \
     --time_limit 3600
 
 # Múltiples instancias
