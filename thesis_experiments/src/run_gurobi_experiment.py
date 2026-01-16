@@ -499,30 +499,12 @@ class GurobiMISExperiment:
                     gap = abs(phase1_bound - phase1_obj) / abs(phase1_obj) * 100
                     print(f"  - Gap: {gap:.4f}%")
 
-        # ==================== VERIFICAR SI NECESITAMOS FASE 2 ====================
-
-        # Si ya encontramos óptimo en fase 1, no necesitamos fase 2
-        if phase1_status == GRB.OPTIMAL:
-            if verbose:
-                print(f"\n[BACKPAS] Óptimo encontrado en Fase 1. No se requiere Fase 2.")
-
-            end_time_total = time.time()
-            metrics = self._collect_metrics(
-                model_phase1, instance_path, start_time_total, end_time_total, 'backpas'
-            )
-            metrics.update(trust_region_info)
-            metrics['phase1_time'] = phase1_time
-            metrics['phase1_status'] = self._status_to_string(phase1_status)
-            metrics['phase1_obj'] = phase1_obj
-            metrics['phase1_nodes'] = phase1_nodes
-            metrics['phase2_time'] = 0
-            metrics['phase2_status'] = None
-            metrics['phase2_obj'] = None
-            metrics['phase2_nodes'] = 0
-            metrics['trust_region_removed'] = False
-            metrics['warmstart_used'] = False
-            metrics['incumbent_history'] = self.incumbent_history
-            return metrics
+        # ==================== VERIFICAR TIEMPO PARA FASE 2 ====================
+        # IMPORTANTE: Siempre ejecutamos Fase 2 (si hay tiempo), incluso si Fase 1
+        # terminó con OPTIMAL. El "óptimo" de Fase 1 es solo el óptimo DENTRO de la
+        # trust region, no necesariamente el óptimo GLOBAL. Si las predicciones de
+        # la GNN fueron incorrectas, la trust region podría haber excluido el
+        # verdadero óptimo.
 
         # Calcular tiempo restante
         elapsed_time = time.time() - start_time_total
@@ -531,6 +513,7 @@ class GurobiMISExperiment:
         if remaining_time <= 1:  # Menos de 1 segundo restante
             if verbose:
                 print(f"\n[BACKPAS] Sin tiempo restante para Fase 2 ({remaining_time:.2f}s).")
+                print(f"[BACKPAS] ADVERTENCIA: No se pudo verificar si el óptimo de Fase 1 es el óptimo global.")
 
             end_time_total = time.time()
             metrics = self._collect_metrics(
@@ -547,12 +530,13 @@ class GurobiMISExperiment:
             metrics['phase2_nodes'] = 0
             metrics['trust_region_removed'] = False
             metrics['warmstart_used'] = False
+            metrics['phase2_skipped'] = True  # Indicar que Fase 2 fue omitida
             metrics['incumbent_history'] = self.incumbent_history
             return metrics
 
-        # ==================== FASE 2: SIN TRUST REGION ====================
+        # ==================== FASE 2: SIN TRUST REGION (SIEMPRE SE EJECUTA) ====================
         if verbose:
-            print(f"\n[BACKPAS] === FASE 2: Sin Trust Region ===")
+            print(f"\n[BACKPAS] === FASE 2: Sin Trust Region (verificación de óptimo global) ===")
             print(f"[BACKPAS] Tiempo límite fase 2: {remaining_time:.2f}s")
             if warmstart_solution:
                 print(f"[BACKPAS] Usando warmstart con {len(warmstart_solution)} variables")
@@ -636,6 +620,8 @@ class GurobiMISExperiment:
         metrics['trust_region_removed'] = True
         metrics['warmstart_used'] = len(warmstart_solution) > 0
         metrics['total_nodes'] = phase1_nodes + phase2_nodes
+        metrics['phase2_skipped'] = False
+        metrics['phase2_improved'] = phase2_obj is not None and phase1_obj is not None and phase2_obj > phase1_obj
         metrics['incumbent_history'] = self.incumbent_history
 
         return metrics
@@ -710,10 +696,18 @@ class GurobiMISExperiment:
             print(f"  Fase 1 (con TR): {metrics.get('phase1_time', 0):.2f}s, "
                   f"estado={metrics.get('phase1_status')}, "
                   f"obj={metrics.get('phase1_obj')}")
-            if metrics.get('phase2_time', 0) > 0:
+            if metrics.get('phase2_skipped'):
+                print(f"  Fase 2: OMITIDA (sin tiempo restante)")
+                print(f"  ADVERTENCIA: El resultado puede no ser el óptimo global")
+            elif metrics.get('phase2_time', 0) > 0:
                 print(f"  Fase 2 (sin TR): {metrics.get('phase2_time', 0):.2f}s, "
                       f"estado={metrics.get('phase2_status')}, "
                       f"obj={metrics.get('phase2_obj')}")
+                if metrics.get('phase2_improved'):
+                    print(f"  ** Fase 2 MEJORÓ el resultado de Fase 1 **")
+                    print(f"     (Trust region había excluido el óptimo global)")
+                else:
+                    print(f"  Fase 2 confirmó el resultado de Fase 1")
             print(f"  Trust region removida: {metrics.get('trust_region_removed')}")
             print(f"  Warmstart usado: {metrics.get('warmstart_used')}")
 
@@ -831,6 +825,7 @@ def save_metrics_to_csv(metrics_list: List[Dict], output_path: str):
         'phase1_time', 'phase1_status', 'phase1_obj', 'phase1_nodes',
         'phase2_time', 'phase2_status', 'phase2_obj', 'phase2_nodes',
         'total_nodes', 'trust_region_removed', 'warmstart_used',
+        'phase2_skipped', 'phase2_improved',
         'timestamp'
     ]
 
