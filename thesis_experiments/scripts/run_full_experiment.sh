@@ -1,8 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # Script para ejecutar el experimento completo en servidor SSH
-# 
-# Tesis: Aceleración de la Demostración de Optimalidad en Gurobi mediante 
+#
+# Tesis: Aceleración de la Demostración de Optimalidad en Gurobi mediante
 #        Predicción de Variables Backbone para el Problema de Maximum Independent Set
 #
 # Uso:
@@ -32,6 +32,11 @@ TIME_LIMIT=3600      # 1 hora
 THREADS=1
 SEED=42
 
+# Parámetros BACKPAS
+TRUST_REGION_TIME=300
+THRESHOLD=0.7
+ALPHA=0.0
+
 # Ruta al modelo BACKPAS (AJUSTAR SEGÚN TU CONFIGURACIÓN)
 MODEL_PATH="${PROJECT_DIR}/../wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth"
 
@@ -45,32 +50,42 @@ echo "  - Nodos: ${N_NODES}"
 echo "  - Tiempo límite: ${TIME_LIMIT}s"
 echo "  - Hilos: ${THREADS}"
 echo "  - Semilla: ${SEED}"
+echo "  - Trust region time: ${TRUST_REGION_TIME}s"
+echo "  - Threshold (θ): ${THRESHOLD}"
+echo "  - Alpha (α): ${ALPHA}"
 echo ""
 
 # =============================================================================
 # PASO 1: Generar instancias
 # =============================================================================
-echo -e "${YELLOW}[PASO 1/5] Generando instancias MIS...${NC}"
+echo -e "${YELLOW}[PASO 1/4] Generando instancias MIS...${NC}"
 
-python "${SRC_DIR}/generate_mis_instances.py" \
-    --n_instances ${N_INSTANCES} \
-    --n_nodes ${N_NODES} \
-    --output_dir "${INSTANCES_DIR}/baseline" \
-    --prefix "mis" \
-    --seed ${SEED}
+INSTANCE_OUTPUT_DIR="${INSTANCES_DIR}/n${N_NODES}_seed${SEED}"
 
-echo -e "${GREEN}Instancias generadas en: ${INSTANCES_DIR}/baseline${NC}"
+if [ -d "${INSTANCE_OUTPUT_DIR}" ] && [ "$(ls -A ${INSTANCE_OUTPUT_DIR}/*.lp 2>/dev/null)" ]; then
+    echo -e "${GREEN}Instancias ya existen en: ${INSTANCE_OUTPUT_DIR}. Saltando generación.${NC}"
+else
+    python "${SRC_DIR}/generate_mis_instances.py" \
+        --n_instances ${N_INSTANCES} \
+        --n_nodes ${N_NODES} \
+        --output_dir "${INSTANCE_OUTPUT_DIR}" \
+        --prefix "mis" \
+        --seed ${SEED}
+    echo -e "${GREEN}Instancias generadas en: ${INSTANCE_OUTPUT_DIR}${NC}"
+fi
 echo ""
 
 # =============================================================================
 # PASO 2: Ejecutar baseline (sin backbone)
 # =============================================================================
-echo -e "${YELLOW}[PASO 2/5] Ejecutando experimentos BASELINE...${NC}"
+echo -e "${YELLOW}[PASO 2/4] Ejecutando experimentos BASELINE...${NC}"
 echo "Esto puede tomar varias horas..."
 
+BASELINE_CSV="${RESULTS_DIR}/metrics/baseline_n${N_NODES}.csv"
+
 python "${SRC_DIR}/run_gurobi_experiment.py" \
-    --instance_dir "${INSTANCES_DIR}/baseline" \
-    --output_csv "${RESULTS_DIR}/metrics/baseline_results.csv" \
+    --instance_dir "${INSTANCE_OUTPUT_DIR}" \
+    --output_csv "${BASELINE_CSV}" \
     --log_dir "${RESULTS_DIR}/logs/baseline" \
     --threads ${THREADS} \
     --time_limit ${TIME_LIMIT}
@@ -79,51 +94,42 @@ echo -e "${GREEN}Baseline completado.${NC}"
 echo ""
 
 # =============================================================================
-# PASO 3: Generar trust regions
+# PASO 3: Ejecutar BACKPAS (con trust region en dos fases)
 # =============================================================================
-echo -e "${YELLOW}[PASO 3/5] Generando Trust Regions con modelo BACKPAS...${NC}"
+echo -e "${YELLOW}[PASO 3/4] Ejecutando experimentos BACKPAS...${NC}"
+echo "Esto puede tomar varias horas..."
 
-if [ -f "${MODEL_PATH}" ]; then
-    python "${SRC_DIR}/generate_trust_region.py" \
-        --model_path "${MODEL_PATH}" \
-        --input_dir "${INSTANCES_DIR}/baseline" \
-        --output_dir "${INSTANCES_DIR}/with_backbone" \
-        --method thresholded_expected_error \
-        --threshold 0.7 \
-        --alpha 0.0
-    
-    echo -e "${GREEN}Trust regions generadas en: ${INSTANCES_DIR}/with_backbone${NC}"
-else
+BACKPAS_CSV="${RESULTS_DIR}/metrics/backpas_n${N_NODES}_t${TRUST_REGION_TIME}_th${THRESHOLD}_a${ALPHA}.csv"
+
+if [ ! -f "${MODEL_PATH}" ]; then
     echo -e "${RED}ERROR: Modelo no encontrado en ${MODEL_PATH}${NC}"
     echo -e "${RED}Ajusta la variable MODEL_PATH en este script${NC}"
     exit 1
 fi
-echo ""
-
-# =============================================================================
-# PASO 4: Ejecutar con backbone
-# =============================================================================
-echo -e "${YELLOW}[PASO 4/5] Ejecutando experimentos CON BACKBONE...${NC}"
-echo "Esto puede tomar varias horas..."
 
 python "${SRC_DIR}/run_gurobi_experiment.py" \
-    --instance_dir "${INSTANCES_DIR}/with_backbone" \
-    --output_csv "${RESULTS_DIR}/metrics/backbone_results.csv" \
-    --log_dir "${RESULTS_DIR}/logs/backbone" \
+    --instance_dir "${INSTANCE_OUTPUT_DIR}" \
+    --backpas \
+    --model_path "${MODEL_PATH}" \
+    --trust_region_time ${TRUST_REGION_TIME} \
+    --threshold ${THRESHOLD} \
+    --alpha ${ALPHA} \
+    --output_csv "${BACKPAS_CSV}" \
+    --log_dir "${RESULTS_DIR}/logs/backpas" \
     --threads ${THREADS} \
     --time_limit ${TIME_LIMIT}
 
-echo -e "${GREEN}Backbone completado.${NC}"
+echo -e "${GREEN}BACKPAS completado.${NC}"
 echo ""
 
 # =============================================================================
-# PASO 5: Analizar resultados
+# PASO 4: Analizar resultados
 # =============================================================================
-echo -e "${YELLOW}[PASO 5/5] Analizando resultados...${NC}"
+echo -e "${YELLOW}[PASO 4/4] Analizando resultados...${NC}"
 
 python "${SRC_DIR}/analyze_results.py" \
-    --baseline "${RESULTS_DIR}/metrics/baseline_results.csv" \
-    --backbone "${RESULTS_DIR}/metrics/backbone_results.csv" \
+    --baseline "${BASELINE_CSV}" \
+    --backbone "${BACKPAS_CSV}" \
     --output_dir "${RESULTS_DIR}/analysis" \
     --latex_table "${PROJECT_DIR}/thesis/figures/comparison_table.tex"
 
@@ -133,8 +139,8 @@ echo -e "${GREEN}   EXPERIMENTO COMPLETADO EXITOSAMENTE     ${NC}"
 echo -e "${GREEN}============================================${NC}"
 echo ""
 echo "Resultados guardados en:"
-echo "  - Métricas baseline: ${RESULTS_DIR}/metrics/baseline_results.csv"
-echo "  - Métricas backbone: ${RESULTS_DIR}/metrics/backbone_results.csv"
-echo "  - Análisis: ${RESULTS_DIR}/analysis/"
-echo "  - Tabla LaTeX: ${PROJECT_DIR}/thesis/figures/comparison_table.tex"
+echo "  - Métricas baseline: ${BASELINE_CSV}"
+echo "  - Métricas BACKPAS:  ${BACKPAS_CSV}"
+echo "  - Análisis:          ${RESULTS_DIR}/analysis/"
+echo "  - Tabla LaTeX:       ${PROJECT_DIR}/thesis/figures/comparison_table.tex"
 echo ""
