@@ -543,8 +543,9 @@ class GurobiMISExperiment:
                 if phase1_obj:
                     print(f"[BACKPAS] Solución inicial (warmstart): {phase1_obj}")
 
-        # Guardar historial de fase 1
+        # Guardar historial de fase 1 y resetear para fase 2
         phase1_history = self.incumbent_history.copy()
+        self.incumbent_history = []
 
         # Crear modelo limpio (sin trust region)
         model_phase2 = gp.read(instance_path)
@@ -586,10 +587,13 @@ class GurobiMISExperiment:
                 print(f"  - Mejor solución: {phase2_obj}")
 
         # Combinar historiales ajustando tiempos de fase 2
+        # phase1_history tiene entries con tiempos relativos a fase 1
+        # self.incumbent_history tiene entries de fase 2 con tiempos relativos a fase 2
+        elapsed_before_phase2 = time.time() - start_time_total - phase2_time
         combined_history = phase1_history.copy()
         for entry in self.incumbent_history:
             combined_history.append({
-                'time': phase1_time + entry['time'],
+                'time': elapsed_before_phase2 + entry['time'],
                 'incumbent': entry['incumbent'],
                 'bound': entry['bound']
             })
