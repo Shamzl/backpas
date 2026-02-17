@@ -69,7 +69,7 @@ def run_parameter_search(
             glob(os.path.join(instance_dir, "*.mps"))
     )
     if not instance_files:
-        print(f"ERROR: No se encontraron archivos .lp en {instance_dir}")
+        print(f"ERROR: No se encontraron archivos .lp/.mps en {instance_dir}")
         return
 
     os.makedirs(output_dir, exist_ok=True)

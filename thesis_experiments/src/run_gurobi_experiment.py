@@ -758,8 +758,14 @@ def run_batch_experiment(
     """
     from glob import glob
 
-    # Encontrar instancias
-    instance_files = sorted(glob(os.path.join(instance_dir, pattern)))
+    # Encontrar instancias (.lp y .mps)
+    if pattern == "*.lp":
+        instance_files = sorted(
+            glob(os.path.join(instance_dir, "*.lp")) +
+            glob(os.path.join(instance_dir, "*.mps"))
+        )
+    else:
+        instance_files = sorted(glob(os.path.join(instance_dir, pattern)))
 
     if not instance_files:
         print(f"No se encontraron archivos {pattern} en {instance_dir}")
