@@ -63,8 +63,11 @@ def run_parameter_search(
         time_limit: Tiempo límite por instancia
         threads: Número de hilos
     """
-    # Encontrar instancias
-    instance_files = sorted(glob(os.path.join(instance_dir, "*.lp")))
+    # Encontrar instancias (.lp o .mpl)
+    instance_files = sorted(
+            glob(os.path.join(instance_dir, "*.lp")) +
+            glob(os.path.join(instance_dir, "*.mps"))
+    )
     if not instance_files:
         print(f"ERROR: No se encontraron archivos .lp en {instance_dir}")
         return
