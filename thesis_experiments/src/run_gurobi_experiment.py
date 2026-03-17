@@ -557,15 +557,22 @@ class GurobiMISExperiment:
         self.incumbent_history = []
 
         # Reusar el modelo de Fase 1 eliminando las restricciones TR y variables delta.
-        # Esto preserva los cortes (Gomory, cover, zero-half, etc.), los bounds y la
-        # base LP que Gurobi calculó durante Fase 1, evitando rehacer el trabajo desde cero.
-        # El incumbent encontrado en Fase 1 se mantiene automáticamente como punto de partida.
+        # Esto preserva los cortes (Gomory, cover, zero-half, etc.) y los bounds
+        # calculados durante Fase 1, evitando rehacer ese trabajo desde cero.
         model_phase2 = model_phase1
         for constr in tr_constraints:
             model_phase2.remove(constr)
         for dv in delta_vars_added:
             model_phase2.remove(dv)
         model_phase2.update()
+
+        # Al modificar el modelo (remove + update), Gurobi invalida el incumbent anterior.
+        # Se debe proporcionar la solución de Fase 1 como MIP start explícito para que
+        # Phase 2 parta desde esa solución en lugar de buscar una desde cero.
+        if warmstart_solution:
+            for v in model_phase2.getVars():
+                if v.VarName in warmstart_solution:
+                    v.Start = warmstart_solution[v.VarName]
 
         # Configurar fase 2
         model_phase2.Params.Threads = self.threads
