@@ -1,2 +1,6 @@
 thesis_experiments/docs/*
+thesis_experiments/results/*
+thesis_experiments/thesis/*
+
+.DS_Store
 
