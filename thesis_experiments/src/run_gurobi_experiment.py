@@ -234,8 +234,10 @@ class GurobiMISExperiment:
         # Crear mapeo nombre -> objeto variable de Gurobi
         gurobi_var_map = {var.VarName: var for var in model.getVars()}
 
-        # Variables delta para cada variable seleccionada
+        # Variables delta para cada variable seleccionada.
+        # Se guardan referencias para poder eliminarlas en Fase 2 al reusar el modelo.
         delta_vars = []
+        tr_constraints = []
 
         for j, original_var_idx in enumerate(selected_indices):
             tar_var_name = index_to_var_name[original_var_idx.item()]
@@ -245,24 +247,31 @@ class GurobiMISExperiment:
             predicted_class = assigned_classes[j].item()
 
             if predicted_class == 0:  # Predicción: x = 0
-                model.addConstr(
+                c = model.addConstr(
                     gurobi_var_map[tar_var_name] <= delta_var,
                     name=f"tr_{tar_var_name}_0"
                 )
+                tr_constraints.append(c)
             elif predicted_class == 1:  # Predicción: x = 1
-                model.addConstr(
+                c = model.addConstr(
                     1 - gurobi_var_map[tar_var_name] <= delta_var,
                     name=f"tr_{tar_var_name}_1"
                 )
+                tr_constraints.append(c)
 
         # Restricción de suma de deltas
         if delta_vars:
-            model.addConstr(
+            c = model.addConstr(
                 sum(delta_vars) <= Delta,
                 name="tr_delta_sum"
             )
+            tr_constraints.append(c)
 
         model.update()
+
+        # Retornar referencias para que Fase 2 pueda eliminar exactamente
+        # lo que se agregó sin necesidad de recargar el modelo desde archivo.
+        return delta_vars, tr_constraints
 
     def _collect_metrics(
         self,
@@ -450,7 +459,9 @@ class GurobiMISExperiment:
 
         # Crear modelo con trust region
         model_phase1 = gp.read(instance_path)
-        self._add_trust_region_constraints(
+        # Capturar referencias a las variables delta y restricciones TR
+        # para poder eliminarlas en Fase 2 al reusar el mismo modelo.
+        delta_vars_added, tr_constraints = self._add_trust_region_constraints(
             model_phase1, selected_indices, assigned_classes, Delta, v_map
         )
 
@@ -538,23 +549,23 @@ class GurobiMISExperiment:
         if verbose:
             print(f"\n[BACKPAS] === FASE 2: Sin Trust Region (verificación de óptimo global) ===")
             print(f"[BACKPAS] Tiempo límite fase 2: {remaining_time:.2f}s")
-            if warmstart_solution:
-                print(f"[BACKPAS] Usando warmstart con {len(warmstart_solution)} variables")
-                if phase1_obj:
-                    print(f"[BACKPAS] Solución inicial (warmstart): {phase1_obj}")
+            if phase1_obj:
+                print(f"[BACKPAS] Incumbent de Fase 1 preservado: {phase1_obj}")
 
         # Guardar historial de fase 1 y resetear para fase 2
         phase1_history = self.incumbent_history.copy()
         self.incumbent_history = []
 
-        # Crear modelo limpio (sin trust region)
-        model_phase2 = gp.read(instance_path)
-
-        # Aplicar warmstart
-        if warmstart_solution:
-            for v in model_phase2.getVars():
-                if v.VarName in warmstart_solution:
-                    v.Start = warmstart_solution[v.VarName]
+        # Reusar el modelo de Fase 1 eliminando las restricciones TR y variables delta.
+        # Esto preserva los cortes (Gomory, cover, zero-half, etc.), los bounds y la
+        # base LP que Gurobi calculó durante Fase 1, evitando rehacer el trabajo desde cero.
+        # El incumbent encontrado en Fase 1 se mantiene automáticamente como punto de partida.
+        model_phase2 = model_phase1
+        for constr in tr_constraints:
+            model_phase2.remove(constr)
+        for dv in delta_vars_added:
+            model_phase2.remove(dv)
+        model_phase2.update()
 
         # Configurar fase 2
         model_phase2.Params.Threads = self.threads
@@ -622,7 +633,8 @@ class GurobiMISExperiment:
         metrics['phase2_obj'] = phase2_obj
         metrics['phase2_nodes'] = phase2_nodes
         metrics['trust_region_removed'] = True
-        metrics['warmstart_used'] = len(warmstart_solution) > 0
+        # El incumbent se preserva directamente del modelo reusado (no es un hint externo)
+        metrics['warmstart_used'] = True
         metrics['total_nodes'] = phase1_nodes + phase2_nodes
         metrics['phase2_skipped'] = False
         metrics['phase2_improved'] = phase2_obj is not None and phase1_obj is not None and phase2_obj > phase1_obj
