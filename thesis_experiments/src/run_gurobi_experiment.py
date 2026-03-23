@@ -62,6 +62,7 @@ class GurobiMISExperiment:
         trust_region_time: float = 300,
         threshold: float = 0.7,
         alpha: float = 0.0,
+        # Arquitectura GNN
         graph_type: str = "literals",
         num_layers: int = 8,
         layer_type: str = "GTR"
@@ -94,6 +95,8 @@ class GurobiMISExperiment:
         self.trust_region_time = trust_region_time
         self.threshold = threshold
         self.alpha = alpha
+
+        # Aquitectura GNN
         self.graph_type = graph_type
         self.num_layers = num_layers
         self.layer_type = layer_type
