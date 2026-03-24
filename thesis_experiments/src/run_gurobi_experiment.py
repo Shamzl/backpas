@@ -56,6 +56,7 @@ class GurobiMISExperiment:
         time_limit: float = 3600,
         mip_gap: float = 0.0,
         log_dir: Optional[str] = None,
+        seed: int = 0,
         # Parámetros BACKPAS
         use_backpas: bool = False,
         model_path: Optional[str] = None,
@@ -80,6 +81,7 @@ class GurobiMISExperiment:
             trust_region_time: Tiempo en segundos para Fase 1 con trust region (default: 300)
             threshold: Umbral θ para selección de variables (default: 0.7)
             alpha: Parámetro α para tolerancia (default: 0.0)
+            seed: Semilla aleatoria para Gurobi (default: 0, reproducibilidad)
             graph_type: Tipo de grafo ('literals' o 'variables')
             num_layers: Número de capas GNN (default: 8)
             layer_type: Tipo de capa GNN (default: 'GTR')
@@ -88,6 +90,7 @@ class GurobiMISExperiment:
         self.time_limit = time_limit
         self.mip_gap = mip_gap
         self.log_dir = log_dir
+        self.seed = seed
 
         # Parámetros BACKPAS
         self.use_backpas = use_backpas
@@ -383,6 +386,7 @@ class GurobiMISExperiment:
         model.Params.Threads = self.threads
         model.Params.TimeLimit = self.time_limit
         model.Params.MIPGap = self.mip_gap
+        model.Params.Seed = self.seed
 
         # Configurar log si se especificó directorio
         if self.log_dir:
@@ -472,6 +476,7 @@ class GurobiMISExperiment:
         model_phase1.Params.Threads = self.threads
         model_phase1.Params.TimeLimit = self.trust_region_time
         model_phase1.Params.MIPGap = self.mip_gap
+        model_phase1.Params.Seed = self.seed
 
         if self.log_dir:
             os.makedirs(self.log_dir, exist_ok=True)
@@ -581,6 +586,7 @@ class GurobiMISExperiment:
         model_phase2.Params.Threads = self.threads
         model_phase2.Params.TimeLimit = remaining_time
         model_phase2.Params.MIPGap = self.mip_gap
+        model_phase2.Params.Seed = self.seed
 
         if self.log_dir:
             log_file = os.path.join(self.log_dir, f"{instance_name}_backpas_phase2.log")
@@ -753,7 +759,8 @@ def run_batch_experiment(
     alpha: float = 0.0,
     graph_type: str = "literals",
     num_layers: int = 8,
-    layer_type: str = "GTR"
+    layer_type: str = "GTR",
+    seed: int = 0
 ) -> List[Dict]:
     """
     Ejecuta experimentos sobre múltiples instancias.
@@ -798,7 +805,7 @@ def run_batch_experiment(
     print(f"EXPERIMENTO {method_name}")
     print(f"{'='*60}")
     print(f"Encontradas {len(instance_files)} instancias")
-    print(f"Configuración: threads={threads}, time_limit={time_limit}s, mip_gap={mip_gap}")
+    print(f"Configuración: threads={threads}, time_limit={time_limit}s, mip_gap={mip_gap}, seed={seed}")
     if use_backpas:
         print(f"BACKPAS: trust_region_time={trust_region_time}s, threshold={threshold}, alpha={alpha}")
         print(f"BACKPAS: Modo dos fases (Fase 1: con TR, Fase 2: sin TR + warmstart)")
@@ -810,6 +817,7 @@ def run_batch_experiment(
         time_limit=time_limit,
         mip_gap=mip_gap,
         log_dir=log_dir,
+        seed=seed,
         use_backpas=use_backpas,
         model_path=model_path,
         trust_region_time=trust_region_time,
@@ -933,6 +941,8 @@ Ejemplos de uso:
                         help="Tipo de capa GNN (default: GTR)")
 
     # Salida
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Semilla aleatoria para Gurobi (default: 0)")
     parser.add_argument("--output_csv", type=str, default="../results/metrics/results.csv",
                         help="Archivo CSV para resultados")
     parser.add_argument("--log_dir", type=str, default=None,
@@ -947,6 +957,7 @@ Ejemplos de uso:
             time_limit=args.time_limit,
             mip_gap=args.mip_gap,
             log_dir=args.log_dir,
+            seed=args.seed,
             use_backpas=args.backpas,
             model_path=args.model_path,
             trust_region_time=args.trust_region_time,
@@ -971,6 +982,7 @@ Ejemplos de uso:
             time_limit=args.time_limit,
             mip_gap=args.mip_gap,
             log_dir=args.log_dir,
+            seed=args.seed,
             use_backpas=args.backpas,
             model_path=args.model_path,
             trust_region_time=args.trust_region_time,

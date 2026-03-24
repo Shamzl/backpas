@@ -431,6 +431,126 @@ def generate_latex_table(
     return latex
 
 
+def generate_detailed_table(
+    baseline_csv: str,
+    backbone_csv: str,
+    output_path: Optional[str] = None
+) -> str:
+    """
+    Genera una tabla detallada por instancia con tiempos de Baseline,
+    Phase 1, Phase 2 y total BACKPAS, para comparar directamente.
+
+    Columnas: instancia | baseline | phase1 | phase2 | backpas_total | speedup
+    """
+    df_base = load_results(baseline_csv)
+    df_back = load_results(backbone_csv)
+
+    df = pd.merge(df_base, df_back, on='instance_name', suffixes=('_base', '_back'))
+
+    if len(df) == 0:
+        print("ERROR: No hay instancias comunes entre ambos experimentos")
+        return ""
+
+    # Columnas de tiempo
+    has_phases = 'phase1_time_back' in df.columns and 'phase2_time_back' in df.columns
+    time_base = df['runtime_base']
+    time_p1   = df['phase1_time_back'] if has_phases else pd.Series([float('nan')] * len(df))
+    time_p2   = df['phase2_time_back'] if has_phases else pd.Series([float('nan')] * len(df))
+    time_back = df['runtime_back']
+    speedup   = time_base / time_back.replace(0, float('nan'))
+
+    # ── Tabla texto ──────────────────────────────────────────────────────────
+    col_w = 30
+    header = (f"{'Instancia':<{col_w}} {'Baseline':>10} {'Fase 1':>10} "
+              f"{'Fase 2':>10} {'BACKPAS':>10} {'Speedup':>9}")
+    sep = "-" * len(header)
+    rows = [header, sep]
+
+    for i, row in df.iterrows():
+        p1 = f"{time_p1.iloc[i - df.index[0]]:.2f}" if has_phases else "--"
+        p2 = f"{time_p2.iloc[i - df.index[0]]:.2f}" if has_phases else "--"
+        sp = f"{speedup.iloc[i - df.index[0]]:.2f}x"
+        rows.append(
+            f"{row['instance_name']:<{col_w}} "
+            f"{time_base.iloc[i - df.index[0]]:>10.2f} "
+            f"{p1:>10} {p2:>10} "
+            f"{time_back.iloc[i - df.index[0]]:>10.2f} "
+            f"{sp:>9}"
+        )
+
+    rows.append(sep)
+    rows.append(
+        f"{'Media':<{col_w}} "
+        f"{time_base.mean():>10.2f} "
+        f"{time_p1.mean():>10.2f} "
+        f"{time_p2.mean():>10.2f} "
+        f"{time_back.mean():>10.2f} "
+        f"{speedup.mean():>8.2f}x"
+    )
+    rows.append(
+        f"{'Mediana':<{col_w}} "
+        f"{time_base.median():>10.2f} "
+        f"{time_p1.median():>10.2f} "
+        f"{time_p2.median():>10.2f} "
+        f"{time_back.median():>10.2f} "
+        f"{speedup.median():>8.2f}x"
+    )
+
+    table_text = "\n".join(rows)
+    print("\n" + "=" * 70)
+    print("TABLA DETALLADA DE TIEMPOS (segundos)")
+    print("=" * 70)
+    print(table_text)
+
+    # ── Tabla LaTeX ──────────────────────────────────────────────────────────
+    n = len(df)
+    latex_rows = ""
+    for idx, row in df.iterrows():
+        arr = idx - df.index[0]
+        p1_str = f"{time_p1.iloc[arr]:.2f}" if has_phases else "--"
+        p2_str = f"{time_p2.iloc[arr]:.2f}" if has_phases else "--"
+        sp_str = f"{speedup.iloc[arr]:.2f}x"
+        # Nombre corto: solo el número al final
+        short_name = row['instance_name'].split('_')[-1]
+        latex_rows += (
+            f"  {short_name} & {time_base.iloc[arr]:.2f} & "
+            f"{p1_str} & {p2_str} & "
+            f"{time_back.iloc[arr]:.2f} & {sp_str} \\\\\n"
+        )
+
+    latex = (
+        r"\begin{table}[htbp]" + "\n"
+        r"\centering" + "\n"
+        r"\caption{Tiempos de ejecución por instancia: Baseline vs BACKPAS ("
+        + str(n) + r" instancias)}" + "\n"
+        r"\label{tab:detailed_times}" + "\n"
+        r"\begin{tabular}{lrrrrr}" + "\n"
+        r"\toprule" + "\n"
+        r"\textbf{Inst.} & \textbf{Baseline (s)} & \textbf{Fase 1 (s)} & "
+        r"\textbf{Fase 2 (s)} & \textbf{BACKPAS (s)} & \textbf{Speedup} \\" + "\n"
+        r"\midrule" + "\n"
+        + latex_rows
+        + r"\midrule" + "\n"
+        + f"  Media & {time_base.mean():.2f} & {time_p1.mean():.2f} & "
+          f"{time_p2.mean():.2f} & {time_back.mean():.2f} & "
+          f"{speedup.mean():.2f}x \\\\\n"
+        + f"  Mediana & {time_base.median():.2f} & {time_p1.median():.2f} & "
+          f"{time_p2.median():.2f} & {time_back.median():.2f} & "
+          f"{speedup.median():.2f}x \\\\\n"
+        + r"\bottomrule" + "\n"
+        + r"\end{tabular}" + "\n"
+        + r"\end{table}" + "\n"
+    )
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
+        with open(output_path, 'w') as f:
+            f.write(latex)
+        print(f"\nTabla LaTeX guardada en: {output_path}")
+
+    return latex
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Análisis estadístico de resultados experimentales",
@@ -458,7 +578,9 @@ Ejemplos de uso:
     parser.add_argument("--output_dir", type=str, default="../results/analysis",
                         help="Directorio para guardar análisis")
     parser.add_argument("--latex_table", type=str,
-                        help="Ruta para guardar tabla LaTeX")
+                        help="Ruta para guardar tabla LaTeX de resumen")
+    parser.add_argument("--detailed_table", type=str,
+                        help="Ruta para guardar tabla LaTeX detallada por instancia")
 
     args = parser.parse_args()
 
@@ -469,12 +591,20 @@ Ejemplos de uso:
         output_dir=args.output_dir
     )
 
-    # Generar tabla LaTeX si se solicita
+    # Generar tabla LaTeX de resumen si se solicita
     if args.latex_table:
         generate_latex_table(
             baseline_csv=args.baseline,
             backbone_csv=args.backbone,
             output_path=args.latex_table
+        )
+
+    # Generar tabla detallada por instancia si se solicita
+    if args.detailed_table:
+        generate_detailed_table(
+            baseline_csv=args.baseline,
+            backbone_csv=args.backbone,
+            output_path=args.detailed_table
         )
 
 
