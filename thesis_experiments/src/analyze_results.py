@@ -24,7 +24,7 @@ def load_results(csv_path: str) -> pd.DataFrame:
 
 def compare_experiments(
     baseline_csv: str,
-    backbone_csv: str,
+    backpas_csv: str,
     output_dir: Optional[str] = None
 ) -> dict:
     """
@@ -32,14 +32,14 @@ def compare_experiments(
 
     Args:
         baseline_csv: Ruta al CSV de resultados baseline
-        backbone_csv: Ruta al CSV de resultados BACKPAS
+        backpas_csv: Ruta al CSV de resultados BACKPAS
         output_dir: Directorio para guardar reportes
 
     Returns:
         Diccionario con resultados de la comparación
     """
     df_base = load_results(baseline_csv)
-    df_back = load_results(backbone_csv)
+    df_back = load_results(backpas_csv)
 
     print("=" * 70)
     print("ANÁLISIS COMPARATIVO: BASELINE vs BACKPAS")
@@ -306,7 +306,7 @@ def compare_experiments(
 
 def generate_latex_table(
     baseline_csv: str,
-    backbone_csv: str,
+    backpas_csv: str,
     output_path: Optional[str] = None
 ) -> str:
     """
@@ -314,14 +314,14 @@ def generate_latex_table(
 
     Args:
         baseline_csv: CSV de resultados baseline
-        backbone_csv: CSV de resultados BACKPAS
+        backpas_csv: CSV de resultados BACKPAS
         output_path: Ruta para guardar la tabla
 
     Returns:
         String con la tabla LaTeX
     """
     df_base = load_results(baseline_csv)
-    df_back = load_results(backbone_csv)
+    df_back = load_results(backpas_csv)
 
     df_merged = pd.merge(
         df_base, df_back,
@@ -433,7 +433,7 @@ def generate_latex_table(
 
 def generate_detailed_table(
     baseline_csv: str,
-    backbone_csv: str,
+    backpas_csv: str,
     output_path: Optional[str] = None
 ) -> str:
     """
@@ -443,7 +443,7 @@ def generate_detailed_table(
     Columnas: instancia | baseline | phase1 | phase2 | backpas_total | speedup
     """
     df_base = load_results(baseline_csv)
-    df_back = load_results(backbone_csv)
+    df_back = load_results(backpas_csv)
 
     df = pd.merge(df_base, df_back, on='instance_name', suffixes=('_base', '_back'))
 
@@ -560,20 +560,20 @@ Ejemplos de uso:
   # Comparar baseline vs BACKPAS
   python analyze_results.py \\
       --baseline ../results/metrics/baseline.csv \\
-      --backbone ../results/metrics/backpas.csv \\
+      --backpas ../results/metrics/backpas.csv \\
       --output_dir ../results/analysis
 
   # Generar tabla LaTeX
   python analyze_results.py \\
       --baseline ../results/metrics/baseline.csv \\
-      --backbone ../results/metrics/backpas.csv \\
+      --backpas ../results/metrics/backpas.csv \\
       --latex_table ../thesis/figures/comparison_table.tex
         """
     )
 
     parser.add_argument("--baseline", type=str, required=True,
                         help="CSV con resultados baseline")
-    parser.add_argument("--backbone", type=str, required=True,
+    parser.add_argument("--backpas", type=str, required=True,
                         help="CSV con resultados BACKPAS")
     parser.add_argument("--output_dir", type=str, default="../results/analysis",
                         help="Directorio para guardar análisis")
@@ -587,7 +587,7 @@ Ejemplos de uso:
     # Ejecutar comparación
     results = compare_experiments(
         baseline_csv=args.baseline,
-        backbone_csv=args.backbone,
+        backpas_csv=args.backpas,
         output_dir=args.output_dir
     )
 
@@ -595,7 +595,7 @@ Ejemplos de uso:
     if args.latex_table:
         generate_latex_table(
             baseline_csv=args.baseline,
-            backbone_csv=args.backbone,
+            backpas_csv=args.backpas,
             output_path=args.latex_table
         )
 
@@ -603,7 +603,7 @@ Ejemplos de uso:
     if args.detailed_table:
         generate_detailed_table(
             baseline_csv=args.baseline,
-            backbone_csv=args.backbone,
+            backpas_csv=args.backpas,
             output_path=args.detailed_table
         )
 
