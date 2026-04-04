@@ -27,11 +27,10 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
-import json
 import math
 
 # Agregar src/ al path para importar módulos BACKPAS
-REPO_ROOT = Path(__file__).parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # Importaciones opcionales para modo BACKPAS
@@ -174,7 +173,7 @@ class GurobiMISExperiment:
         P2 = pred_probs[:, 1]  # Probabilidad de clase 1
 
         # Seleccionar variables con confianza >= threshold
-        selected_mask = (torch.max(P1, P2) > self.threshold)
+        selected_mask = (torch.max(P1, P2) >= self.threshold)
         selected_indices = torch.nonzero(selected_mask).squeeze(1)
 
         if selected_indices.numel() == 0:
@@ -373,7 +372,7 @@ class GurobiMISExperiment:
         Ejecuta Gurobi sin trust region (modo baseline).
 
         Args:
-            instance_path: Ruta al archivo .lp
+            instance_path: Ruta al archivo .lp o .mps
             verbose: Si mostrar progreso
 
         Returns:
@@ -416,7 +415,7 @@ class GurobiMISExperiment:
         Fase 2: Si no es óptimo, continúa sin trust region usando warmstart
 
         Args:
-            instance_path: Ruta al archivo .lp
+            instance_path: Ruta al archivo .lp o .mps
             verbose: Si mostrar progreso
 
         Returns:
@@ -564,23 +563,33 @@ class GurobiMISExperiment:
         phase1_history = self.incumbent_history.copy()
         self.incumbent_history = []
 
-        # Reusar el modelo de Fase 1 eliminando las restricciones TR y variables delta.
-        # Esto preserva los cortes (Gomory, cover, zero-half, etc.) y los bounds
-        # calculados durante Fase 1, evitando rehacer ese trabajo desde cero.
-        model_phase2 = model_phase1
-        for constr in tr_constraints:
-            model_phase2.remove(constr)
-        for dv in delta_vars_added:
-            model_phase2.remove(dv)
-        model_phase2.update()
-
-        # Al modificar el modelo (remove + update), Gurobi invalida el incumbent anterior.
-        # Se debe proporcionar la solución de Fase 1 como MIP start explícito para que
-        # Phase 2 parta desde esa solución en lugar de buscar una desde cero.
+        # ---- OPCIÓN B: Modelo limpio (sin cortes de Fase 1) ----
+        # Carga el modelo desde cero para que Fase 2 parta de un estado idéntico
+        # al baseline. La única diferencia es el warmstart (incumbent de Fase 1).
+        # Esto permite aislar el efecto del warmstart de forma controlada.
+        model_phase2 = gp.read(instance_path)
         if warmstart_solution:
             for v in model_phase2.getVars():
                 if v.VarName in warmstart_solution:
                     v.Start = warmstart_solution[v.VarName]
+
+        # ---- OPCIÓN A: Reusar modelo de Fase 1 (con cortes heredados) ----
+        # Preserva cortes (Gomory, cover, zero-half, etc.) y bounds de Fase 1.
+        # Contra: los cortes generados dentro de la TR pueden no ser útiles
+        # (o ser perjudiciales) para la búsqueda en el espacio completo.
+        # Al modificar el modelo (remove + update), Gurobi invalida el incumbent,
+        # por lo que se re-aplica el warmstart explícitamente.
+        #
+        # model_phase2 = model_phase1
+        # for constr in tr_constraints:
+        #     model_phase2.remove(constr)
+        # for dv in delta_vars_added:
+        #     model_phase2.remove(dv)
+        # model_phase2.update()
+        # if warmstart_solution:
+        #     for v in model_phase2.getVars():
+        #         if v.VarName in warmstart_solution:
+        #             v.Start = warmstart_solution[v.VarName]
 
         # Configurar fase 2
         model_phase2.Params.Threads = self.threads
@@ -633,8 +642,8 @@ class GurobiMISExperiment:
         )
 
         # Actualizar con la mejor solución encontrada
-        if phase1_obj is not None and phase2_obj is not None:
-            metrics['obj_val'] = max(phase1_obj, phase2_obj)  # MIS es maximización
+        if phase2_obj is not None:
+            metrics['obj_val'] = phase2_obj
         elif phase1_obj is not None:
             metrics['obj_val'] = phase1_obj
 
@@ -649,11 +658,9 @@ class GurobiMISExperiment:
         metrics['phase2_obj'] = phase2_obj
         metrics['phase2_nodes'] = phase2_nodes
         metrics['trust_region_removed'] = True
-        # El incumbent se preserva directamente del modelo reusado (no es un hint externo)
         metrics['warmstart_used'] = True
         metrics['total_nodes'] = phase1_nodes + phase2_nodes
         metrics['phase2_skipped'] = False
-        metrics['phase2_improved'] = phase2_obj is not None and phase1_obj is not None and phase2_obj > phase1_obj
         metrics['incumbent_history'] = self.incumbent_history
 
         return metrics
@@ -735,38 +742,33 @@ class GurobiMISExperiment:
                 print(f"  Fase 2 (sin TR): {metrics.get('phase2_time', 0):.2f}s, "
                       f"estado={metrics.get('phase2_status')}, "
                       f"obj={metrics.get('phase2_obj')}")
-                if metrics.get('phase2_improved'):
-                    print(f"  ** Fase 2 MEJORÓ el resultado de Fase 1 **")
-                    print(f"     (Trust region había excluido el óptimo global)")
-                else:
-                    print(f"  Fase 2 confirmó el resultado de Fase 1")
             print(f"  Trust region removida: {metrics.get('trust_region_removed')}")
             print(f"  Warmstart usado: {metrics.get('warmstart_used')}")
 
 
 def run_batch_experiment(
-    instance_dir: str,
-    output_csv: str,
-    threads: int = 1,
-    time_limit: float = 3600,
-    mip_gap: float = 0.0,
-    log_dir: Optional[str] = None,
-    pattern: str = "*.lp",
-    use_backpas: bool = False,
-    model_path: Optional[str] = None,
-    trust_region_time: float = 300,
-    threshold: float = 0.7,
-    alpha: float = 0.0,
-    graph_type: str = "literals",
-    num_layers: int = 8,
-    layer_type: str = "GTR",
-    seed: int = 0
-) -> List[Dict]:
+        instance_dir: str,
+        output_csv: str,
+        threads: int = 1,
+        time_limit: float = 3600,
+        mip_gap: float = 0.0,
+        log_dir: Optional[str] = None,
+        pattern: str = "*.mps",
+        use_backpas: bool = False,
+        model_path: Optional[str] = None,
+        trust_region_time: float = 300,
+        threshold: float = 0.7,
+        alpha: float = 0.0,
+        graph_type: str = "literals",
+        num_layers: int = 8,
+        layer_type: str = "GTR",
+        seed: int = 0
+        ) -> List[Dict]:
     """
     Ejecuta experimentos sobre múltiples instancias.
 
     Args:
-        instance_dir: Directorio con instancias .lp
+        instance_dir: Directorio con instancias
         output_csv: Archivo CSV para guardar resultados
         threads: Número de hilos
         time_limit: Límite de tiempo por instancia
@@ -788,11 +790,11 @@ def run_batch_experiment(
     from glob import glob
 
     # Encontrar instancias (.lp y .mps)
-    if pattern == "*.lp":
+    if pattern == "*.mps":
         instance_files = sorted(
-            glob(os.path.join(instance_dir, "*.lp")) +
-            glob(os.path.join(instance_dir, "*.mps"))
-        )
+                glob(os.path.join(instance_dir, "*.lp")) +
+                glob(os.path.join(instance_dir, "*.mps"))
+                )
     else:
         instance_files = sorted(glob(os.path.join(instance_dir, pattern)))
 
@@ -813,20 +815,20 @@ def run_batch_experiment(
 
     # Crear experimento
     experiment = GurobiMISExperiment(
-        threads=threads,
-        time_limit=time_limit,
-        mip_gap=mip_gap,
-        log_dir=log_dir,
-        seed=seed,
-        use_backpas=use_backpas,
-        model_path=model_path,
-        trust_region_time=trust_region_time,
-        threshold=threshold,
-        alpha=alpha,
-        graph_type=graph_type,
-        num_layers=num_layers,
-        layer_type=layer_type
-    )
+            threads=threads,
+            time_limit=time_limit,
+            mip_gap=mip_gap,
+            log_dir=log_dir,
+            seed=seed,
+            use_backpas=use_backpas,
+            model_path=model_path,
+            trust_region_time=trust_region_time,
+            threshold=threshold,
+            alpha=alpha,
+            graph_type=graph_type,
+            num_layers=num_layers,
+            layer_type=layer_type
+            )
 
     # Ejecutar cada instancia
     all_metrics = []
@@ -857,17 +859,16 @@ def save_metrics_to_csv(metrics_list: List[Dict], output_path: str):
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
 
     fieldnames = [
-        'instance_name', 'method', 'status_name', 'runtime', 'gurobi_runtime',
-        'obj_val', 'obj_bound', 'mip_gap', 'n_nodes', 'n_solutions',
-        'n_vars', 'n_constrs', 'primal_integral', 'threads', 'time_limit',
-        # Campos BACKPAS
-        'k_0', 'k_1', 'Delta', 'n_selected', 'threshold', 'alpha', 'trust_region_time',
-        'phase1_time', 'phase1_status', 'phase1_obj', 'phase1_nodes',
-        'phase2_time', 'phase2_status', 'phase2_obj', 'phase2_nodes',
-        'total_nodes', 'trust_region_removed', 'warmstart_used',
-        'phase2_skipped', 'phase2_improved',
-        'timestamp'
-    ]
+            'instance_name', 'method', 'status_name', 'runtime', 'gurobi_runtime',
+            'obj_val', 'obj_bound', 'mip_gap', 'n_nodes', 'n_solutions',
+            'n_vars', 'n_constrs', 'primal_integral', 'threads', 'time_limit',
+            # Campos BACKPAS
+            'k_0', 'k_1', 'Delta', 'n_selected', 'threshold', 'alpha', 'trust_region_time',
+            'phase1_time', 'phase1_status', 'phase1_obj', 'phase1_nodes',
+            'phase2_time', 'phase2_status', 'phase2_obj', 'phase2_nodes',
+            'total_nodes', 'trust_region_removed', 'warmstart_used',
+            'phase2_skipped','timestamp'
+            ]
 
     with open(output_path, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
@@ -877,41 +878,41 @@ def save_metrics_to_csv(metrics_list: List[Dict], output_path: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Ejecutar experimentos Gurobi sobre instancias MIS (BASELINE o BACKPAS)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Ejemplos de uso:
-  # BASELINE - Ejecutar una sola instancia sin ayuda
-  python run_gurobi_experiment.py --instance ../instances/test/mis_50n_000.lp
+            description="Ejecutar experimentos Gurobi sobre instancias MIS (BASELINE o BACKPAS)",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog="""
+            ejemplos de uso:
+              # baseline - ejecutar una sola instancia sin ayuda
+              python run_gurobi_experiment.py --instance ../instances/test/mis_50n_000.lp
 
-  # BASELINE - Ejecutar todas las instancias en un directorio
-  python run_gurobi_experiment.py --instance_dir ../instances/test --output_csv ../results/baseline.csv
+              # baseline - ejecutar todas las instancias en un directorio
+              python run_gurobi_experiment.py --instance_dir ../instances/test --output_csv ../results/baseline.csv
 
-  # BACKPAS - Con trust region en dos fases
-  # Fase 1: 300s con trust region
-  # Fase 2: tiempo restante sin trust region + warmstart
-  python run_gurobi_experiment.py \\
-      --instance ../instances/test/mis_50n_000.lp \\
-      --backpas \\
-      --model_path ../wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth \\
-      --trust_region_time 300 \\
-      --threshold 0.7 \\
-      --alpha 0.0 \\
-      --output_csv ../results/backpas.csv
+              # backpas - con trust region en dos fases
+              # fase 1: 300s con trust region
+              # fase 2: tiempo restante sin trust region + warmstart
+              python run_gurobi_experiment.py \\
+                      --instance ../instances/test/mis_50n_000.lp \\
+                      --backpas \\
+                      --model_path ../wkdir/mis/ml_training/graph_with_literals_8_gtr/best_model.pth \\
+                      --trust_region_time 300 \\
+                      --threshold 0.7 \\
+                      --alpha 0.0 \\
+                      --output_csv ../results/backpas.csv
 
-  # BACKPAS - Experimento con diferentes tiempos de trust region
-  python run_gurobi_experiment.py --instance_dir ../instances/test --backpas \\
-      --model_path ../wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth \\
-      --trust_region_time 60 --output_csv ../results/backpas_60s.csv
-        """
-    )
+              # backpas - experimento con diferentes tiempos de trust region
+              python run_gurobi_experiment.py --instance_dir ../instances/test --backpas \\
+                      --model_path ../wkdir/mis/ml_training/graph_with_literals_8_gtr/best_model.pth \\
+                      --trust_region_time 60 --output_csv ../results/backpas_60s.csv
+            """
+            )
 
     # Modo de ejecución
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--instance", type=str,
-                       help="Ruta a una sola instancia .lp")
+                       help="Ruta a una sola instancia .lp o .mps")
     group.add_argument("--instance_dir", type=str,
-                       help="Directorio con múltiples instancias .lp")
+                       help="Directorio con múltiples instancias .lp o .mps")
 
     # Configuración de Gurobi
     parser.add_argument("--threads", type=int, default=1,
@@ -953,20 +954,20 @@ Ejemplos de uso:
     if args.instance:
         # Ejecutar una sola instancia
         experiment = GurobiMISExperiment(
-            threads=args.threads,
-            time_limit=args.time_limit,
-            mip_gap=args.mip_gap,
-            log_dir=args.log_dir,
-            seed=args.seed,
-            use_backpas=args.backpas,
-            model_path=args.model_path,
-            trust_region_time=args.trust_region_time,
-            threshold=args.threshold,
-            alpha=args.alpha,
-            graph_type=args.graph_type,
-            num_layers=args.num_layers,
-            layer_type=args.layer_type
-        )
+                threads=args.threads,
+                time_limit=args.time_limit,
+                mip_gap=args.mip_gap,
+                log_dir=args.log_dir,
+                seed=args.seed,
+                use_backpas=args.backpas,
+                model_path=args.model_path,
+                trust_region_time=args.trust_region_time,
+                threshold=args.threshold,
+                alpha=args.alpha,
+                graph_type=args.graph_type,
+                num_layers=args.num_layers,
+                layer_type=args.layer_type
+                )
         metrics = experiment.run_instance(args.instance, verbose=True)
 
         # Guardar resultado
@@ -976,22 +977,22 @@ Ejemplos de uso:
     else:
         # Ejecutar batch
         run_batch_experiment(
-            instance_dir=args.instance_dir,
-            output_csv=args.output_csv,
-            threads=args.threads,
-            time_limit=args.time_limit,
-            mip_gap=args.mip_gap,
-            log_dir=args.log_dir,
-            seed=args.seed,
-            use_backpas=args.backpas,
-            model_path=args.model_path,
-            trust_region_time=args.trust_region_time,
-            threshold=args.threshold,
-            alpha=args.alpha,
-            graph_type=args.graph_type,
-            num_layers=args.num_layers,
-            layer_type=args.layer_type
-        )
+                instance_dir=args.instance_dir,
+                output_csv=args.output_csv,
+                threads=args.threads,
+                time_limit=args.time_limit,
+                mip_gap=args.mip_gap,
+                log_dir=args.log_dir,
+                seed=args.seed,
+                use_backpas=args.backpas,
+                model_path=args.model_path,
+                trust_region_time=args.trust_region_time,
+                threshold=args.threshold,
+                alpha=args.alpha,
+                graph_type=args.graph_type,
+                num_layers=args.num_layers,
+                layer_type=args.layer_type
+                )
 
 
 if __name__ == "__main__":
