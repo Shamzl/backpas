@@ -12,8 +12,7 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 import os
-from pathlib import Path
-from typing import Tuple, Optional
+from typing import Optional
 
 
 def load_results(csv_path: str) -> pd.DataFrame:
@@ -551,6 +550,102 @@ def generate_detailed_table(
     return latex
 
 
+def aggregate_seeds(input_dir: str) -> None:
+    """
+    Detecta todos los baseline_seed*.csv y backpas_seed*.csv en input_dir,
+    calcula media ± std ± min ± max por instancia entre seeds, y guarda
+    baseline_aggregated.csv y backpas_aggregated.csv en el mismo directorio.
+    """
+    import glob
+
+    numeric_cols = [
+        'runtime', 'gurobi_runtime', 'obj_val', 'n_nodes', 'n_solutions',
+        'primal_integral', 'phase1_time', 'phase2_time', 'phase1_obj',
+        'phase2_obj', 'phase1_nodes', 'phase2_nodes', 'total_nodes',
+    ]
+
+    def _aggregate_group(csv_paths: list, output_path: str, label: str) -> None:
+        dfs = []
+        for i, path in enumerate(csv_paths):
+            df = pd.read_csv(path)
+            df['seed'] = i
+            dfs.append(df)
+
+        all_data = pd.concat(dfs, ignore_index=True)
+        cols = [c for c in numeric_cols if c in all_data.columns]
+
+        grouped = all_data.groupby('instance_name')
+
+        agg_mean  = grouped[cols].mean().add_suffix('_mean')
+        agg_std   = grouped[cols].std().add_suffix('_std')
+        agg_min   = grouped[cols].min().add_suffix('_min')
+        agg_max   = grouped[cols].max().add_suffix('_max')
+
+        # Contar cuántas seeds llegaron a OPTIMAL
+        if 'status_name' in all_data.columns:
+            n_optimal = grouped['status_name'].apply(
+                lambda x: (x == 'OPTIMAL').sum()
+            ).rename('n_optimal')
+        else:
+            n_optimal = pd.Series(dtype=int)
+
+        result = pd.concat([agg_mean, agg_std, agg_min, agg_max], axis=1)
+        if len(n_optimal):
+            result = result.join(n_optimal)
+        result['n_seeds'] = grouped['seed'].count()
+        result = result.reset_index()
+        result.to_csv(output_path, index=False)
+
+        # Resumen en pantalla
+        n_seeds = len(dfs)
+        n_inst  = len(result)
+        print(f"\n  {label.upper()} — {n_seeds} seeds, {n_inst} instancias")
+        if 'runtime_mean' in result.columns:
+            print(f"  Runtime:         {result['runtime_mean'].mean():.2f}s "
+                  f"(± {result['runtime_std'].mean():.2f}s)")
+        if 'primal_integral_mean' in result.columns:
+            pi = result['primal_integral_mean'].dropna()
+            if len(pi):
+                print(f"  Primal integral: {pi.mean():.4f} "
+                      f"(± {result['primal_integral_std'].mean():.4f})")
+        if 'phase1_time_mean' in result.columns:
+            print(f"  Fase 1 media:    {result['phase1_time_mean'].mean():.2f}s")
+        if 'phase2_time_mean' in result.columns:
+            print(f"  Fase 2 media:    {result['phase2_time_mean'].mean():.2f}s")
+        if 'n_optimal' in result.columns:
+            fully_optimal = (result['n_optimal'] == n_seeds).sum()
+            print(f"  OPTIMAL en todas las seeds: {fully_optimal}/{n_inst}")
+        print(f"  Guardado en: {output_path}")
+
+    print(f"\n{'='*60}")
+    print("AGREGANDO RESULTADOS POR SEED")
+    print(f"{'='*60}")
+    print(f"  Directorio: {input_dir}")
+
+    baseline_csvs = sorted(glob.glob(os.path.join(input_dir, "baseline_seed*.csv")))
+    backpas_csvs  = sorted(glob.glob(os.path.join(input_dir, "backpas_seed*.csv")))
+
+    print(f"  baseline_seed*.csv encontrados: {len(baseline_csvs)}")
+    print(f"  backpas_seed*.csv  encontrados: {len(backpas_csvs)}")
+
+    if not baseline_csvs and not backpas_csvs:
+        print("  ERROR: no se encontraron CSVs en el directorio")
+        return
+
+    if baseline_csvs:
+        _aggregate_group(
+            baseline_csvs,
+            os.path.join(input_dir, "baseline_aggregated.csv"),
+            "baseline"
+        )
+    if backpas_csvs:
+        _aggregate_group(
+            backpas_csvs,
+            os.path.join(input_dir, "backpas_aggregated.csv"),
+            "backpas"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Análisis estadístico de resultados experimentales",
@@ -571,9 +666,9 @@ Ejemplos de uso:
         """
     )
 
-    parser.add_argument("--baseline", type=str, required=True,
+    parser.add_argument("--baseline", type=str, default=None,
                         help="CSV con resultados baseline")
-    parser.add_argument("--backpas", type=str, required=True,
+    parser.add_argument("--backpas", type=str, default=None,
                         help="CSV con resultados BACKPAS")
     parser.add_argument("--output_dir", type=str, default="../results/analysis",
                         help="Directorio para guardar análisis")
@@ -581,25 +676,34 @@ Ejemplos de uso:
                         help="Ruta para guardar tabla LaTeX de resumen")
     parser.add_argument("--detailed_table", type=str,
                         help="Ruta para guardar tabla LaTeX detallada por instancia")
+    parser.add_argument("--aggregate_dir", type=str, default=None,
+                        help="Directorio con baseline_seed*.csv y backpas_seed*.csv "
+                             "para agregar por seed")
 
     args = parser.parse_args()
 
-    # Ejecutar comparación
+    # Modo agregación de seeds
+    if args.aggregate_dir:
+        aggregate_seeds(args.aggregate_dir)
+        return
+
+    # Modo comparación normal — requiere --baseline y --backpas
+    if not args.baseline or not args.backpas:
+        parser.error("--baseline y --backpas son requeridos (o usa --aggregate_dir)")
+
     results = compare_experiments(
         baseline_csv=args.baseline,
-        backpas_csv=args.backpas,
+        backbone_csv=args.backpas,
         output_dir=args.output_dir
     )
 
-    # Generar tabla LaTeX de resumen si se solicita
     if args.latex_table:
         generate_latex_table(
             baseline_csv=args.baseline,
-            backpas_csv=args.backpas,
+            backbone_csv=args.backpas,
             output_path=args.latex_table
         )
 
-    # Generar tabla detallada por instancia si se solicita
     if args.detailed_table:
         generate_detailed_table(
             baseline_csv=args.baseline,
