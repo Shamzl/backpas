@@ -1,6 +1,17 @@
 thesis_experiments/docs/*
 thesis_experiments/results/*
 thesis_experiments/thesis/*
+thesis_experiments/instances/*
 
 .DS_Store
 
+.venv
+
+dataset/*
+docs/*
+results/*
+wkdir/*
+
+*.zip
+
+*.log
