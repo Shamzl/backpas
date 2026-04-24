@@ -7,8 +7,8 @@ pandas==2.3.3
 # Machine Learning
 torch==2.8.0
 torch_geometric==2.7.0
-# torch_scatter y torch_sparse requieren instalación manual desde PyG:
-#  pip install torch_scatter torch_sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.8.0+cpu.html
+# torch_scatter y torch_sparse requieren instalación manual desde PyG manual https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html:
+#  pip install pyg_lib torch_scatter torch_sparse torch_cluster -f https://data.pyg.org/whl/torch-2.8.0+cpu.html
 scikit-learn==1.8.0
 
 # Optimization
