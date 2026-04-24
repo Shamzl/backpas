@@ -550,6 +550,151 @@ def generate_detailed_table(
     return latex
 
 
+def generate_time_comparison_table(
+    baseline_csv: str,
+    backpas_csv: str,
+    output_path: Optional[str] = None,
+    label: str = "BACKPAS",
+) -> str:
+    """
+    Genera tabla de tiempos promedio ± std: Gurobi (baseline) vs BACKPAS.
+
+    Para BACKPAS usa phase1_time + phase2_time como tiempo total de Gurobi.
+    Acepta tanto CSVs individuales como agregados (salida de aggregate_seeds).
+
+    Args:
+        baseline_csv: CSV baseline (individual o aggregated).
+        backpas_csv:  CSV BACKPAS  (individual o aggregated).
+        output_path:  Ruta opcional para guardar tabla LaTeX.
+        label:        Nombre del método BACKPAS en los encabezados.
+
+    Returns:
+        String con la tabla LaTeX.
+    """
+    df_base = pd.read_csv(baseline_csv)
+    df_back = pd.read_csv(backpas_csv)
+
+    df = pd.merge(df_base, df_back, on='instance_name', suffixes=('_base', '_back'))
+    n = len(df)
+
+    if n == 0:
+        print("ERROR: No hay instancias comunes entre ambos experimentos")
+        return ""
+
+    # ── Detectar si son CSVs agregados (tienen columnas _mean/_std) ─────────
+    agg_base = 'runtime_mean_base' in df.columns
+    agg_back = 'phase1_time_mean_back' in df.columns
+
+    # Baseline: usar gurobi_runtime
+    if agg_base:
+        t_base_mean = df['gurobi_runtime_mean_base']
+        t_base_std  = df['gurobi_runtime_std_base'].fillna(0.0)
+    else:
+        t_base_mean = df['gurobi_runtime_base']
+        t_base_std  = pd.Series([float('nan')] * n, index=df.index)
+
+    # BACKPAS: usar phase1_time + phase2_time
+    if agg_back:
+        p1_mean     = df['phase1_time_mean_back'].fillna(0.0)
+        p2_mean     = df['phase2_time_mean_back'].fillna(0.0)
+        p1_std      = df['phase1_time_std_back'].fillna(0.0)
+        p2_std      = df['phase2_time_std_back'].fillna(0.0)
+        t_back_mean = p1_mean + p2_mean
+        t_back_std  = np.sqrt(p1_std**2 + p2_std**2)
+    elif 'phase1_time_back' in df.columns and 'phase2_time_back' in df.columns:
+        t_back_mean = df['phase1_time_back'] + df['phase2_time_back']
+        t_back_std  = pd.Series([float('nan')] * n, index=df.index)
+    else:
+        # fallback: runtime total
+        t_back_mean = df['runtime_back']
+        t_back_std  = pd.Series([float('nan')] * n, index=df.index)
+
+    speedup = t_base_mean / t_back_mean.replace(0, float('nan'))
+
+    def _fmt(mean: float, std: float) -> str:
+        if np.isnan(std) or std < 1e-9:
+            return f"{mean:.2f}"
+        return f"{mean:.2f} ± {std:.2f}"
+
+    # ── Tabla texto ──────────────────────────────────────────────────────────
+    col_w = 35
+    header = (f"{'Instancia':<{col_w}} {'Gurobi (s)':>22} {label+' (s)':>22} {'Speedup':>9}")
+    sep = "-" * len(header)
+    rows = [header, sep]
+
+    for i, row in df.iterrows():
+        idx = df.index.get_loc(i)
+        rows.append(
+            f"{row['instance_name']:<{col_w}} "
+            f"{_fmt(t_base_mean.iloc[idx], t_base_std.iloc[idx]):>22} "
+            f"{_fmt(t_back_mean.iloc[idx], t_back_std.iloc[idx]):>22} "
+            f"{speedup.iloc[idx]:>8.2f}x"
+        )
+
+    rows.append(sep)
+    rows.append(
+        f"{'Media':<{col_w}} "
+        f"{_fmt(t_base_mean.mean(), t_base_std.mean()):>22} "
+        f"{_fmt(t_back_mean.mean(), t_back_std.mean()):>22} "
+        f"{speedup.mean():>8.2f}x"
+    )
+    rows.append(
+        f"{'Mediana':<{col_w}} "
+        f"{_fmt(t_base_mean.median(), float('nan')):>22} "
+        f"{_fmt(t_back_mean.median(), float('nan')):>22} "
+        f"{speedup.median():>8.2f}x"
+    )
+
+    table_text = "\n".join(rows)
+    print("\n" + "=" * 70)
+    print(f"TABLA DE TIEMPOS: GUROBI vs {label.upper()} (segundos)")
+    print(f"Baseline = gurobi_runtime | BACKPAS = phase1_time + phase2_time")
+    print("=" * 70)
+    print(table_text)
+
+    # ── Tabla LaTeX ──────────────────────────────────────────────────────────
+    latex_rows = ""
+    for i, row in df.iterrows():
+        idx = df.index.get_loc(i)
+        short      = row['instance_name'].split('_')[-1]
+        base_str   = _fmt(t_base_mean.iloc[idx], t_base_std.iloc[idx])
+        back_str   = _fmt(t_back_mean.iloc[idx], t_back_std.iloc[idx])
+        sp_str     = f"{speedup.iloc[idx]:.2f}x"
+        latex_rows += f"  {short} & {base_str} & {back_str} & {sp_str} \\\\\n"
+
+    latex = (
+        r"\begin{table}[htbp]" + "\n"
+        r"\centering" + "\n"
+        r"\caption{Tiempos de ejecución: Gurobi vs " + label
+        + r" (" + str(n) + r" instancias, media $\pm$ std)}" + "\n"
+        r"\label{tab:time_comparison}" + "\n"
+        r"\begin{tabular}{lrrr}" + "\n"
+        r"\toprule" + "\n"
+        r"\textbf{Inst.} & \textbf{Gurobi (s)} & \textbf{"
+        + label + r" (s)} & \textbf{Speedup} \\" + "\n"
+        r"\midrule" + "\n"
+        + latex_rows
+        + r"\midrule" + "\n"
+        + f"  Media & {_fmt(t_base_mean.mean(), t_base_std.mean())} & "
+          f"{_fmt(t_back_mean.mean(), t_back_std.mean())} & "
+          f"{speedup.mean():.2f}x \\\\\n"
+        + f"  Mediana & {_fmt(t_base_mean.median(), float('nan'))} & "
+          f"{_fmt(t_back_mean.median(), float('nan'))} & "
+          f"{speedup.median():.2f}x \\\\\n"
+        + r"\bottomrule" + "\n"
+        + r"\end{tabular}" + "\n"
+        + r"\end{table}" + "\n"
+    )
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
+        with open(output_path, 'w') as f:
+            f.write(latex)
+        print(f"\nTabla LaTeX guardada en: {output_path}")
+
+    return latex
+
+
 def aggregate_seeds(input_dir: str) -> None:
     """
     Detecta todos los baseline_seed*.csv y backpas_seed*.csv en input_dir,
@@ -646,69 +791,115 @@ def aggregate_seeds(input_dir: str) -> None:
         )
 
 
+def _find_csv(directory: str, prefix: str) -> str:
+    """
+    Busca el CSV más apropiado en `directory` cuyo nombre empiece con `prefix`.
+
+    Prioridad:
+      1. <prefix>_aggregated.csv  (resultado de aggregate_seeds)
+      2. El único archivo <prefix>*.csv si hay exactamente uno
+      3. El primero en orden alfabético si hay varios
+
+    Raises FileNotFoundError si no encuentra ninguno.
+    """
+    import glob
+    pattern = os.path.join(directory, f"{prefix}*.csv")
+    candidates = sorted(glob.glob(pattern))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No se encontró ningún archivo '{prefix}*.csv' en {directory}"
+        )
+    aggregated = [c for c in candidates if os.path.basename(c) == f"{prefix}_aggregated.csv"]
+    if aggregated:
+        return aggregated[0]
+    return candidates[0]
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Análisis estadístico de resultados experimentales",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Ejemplos de uso:
-  # Comparar baseline vs BACKPAS
-  python analyze_results.py \\
-      --baseline ../results/metrics/baseline.csv \\
-      --backpas ../results/metrics/backpas.csv \\
-      --output_dir ../results/analysis
+  # Comparar baseline vs BACKPAS (auto-detecta baseline*.csv y backpas*.csv)
+  python analyze_results.py --dir ../results/metrics/multi_seed
 
-  # Generar tabla LaTeX
+  # Generar tabla de tiempos LaTeX
   python analyze_results.py \\
-      --baseline ../results/metrics/baseline.csv \\
-      --backpas ../results/metrics/backpas.csv \\
-      --latex_table ../thesis/figures/comparison_table.tex
+      --dir ../results/metrics/multi_seed \\
+      --time_table ../thesis/figures/time_table.tex
+
+  # Agregar seeds y luego comparar
+  python analyze_results.py --dir ../results/metrics/multi_seed --aggregate
+  python analyze_results.py --dir ../results/metrics/multi_seed --time_table tabla.tex
         """
     )
 
-    parser.add_argument("--baseline", type=str, default=None,
-                        help="CSV con resultados baseline")
-    parser.add_argument("--backpas", type=str, default=None,
-                        help="CSV con resultados BACKPAS")
-    parser.add_argument("--output_dir", type=str, default="../results/analysis",
-                        help="Directorio para guardar análisis")
-    parser.add_argument("--latex_table", type=str,
-                        help="Ruta para guardar tabla LaTeX de resumen")
-    parser.add_argument("--detailed_table", type=str,
+    parser.add_argument("--dir", type=str, default=None,
+                        help="Directorio con los CSVs. Se auto-detectan baseline*.csv "
+                             "y backpas*.csv (prefiere *_aggregated.csv si existe)")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Directorio para guardar análisis (default: mismo que --dir)")
+    parser.add_argument("--latex_table", type=str, default=None,
+                        help="Ruta para guardar tabla LaTeX de resumen estadístico")
+    parser.add_argument("--detailed_table", type=str, default=None,
                         help="Ruta para guardar tabla LaTeX detallada por instancia")
-    parser.add_argument("--aggregate_dir", type=str, default=None,
-                        help="Directorio con baseline_seed*.csv y backpas_seed*.csv "
-                             "para agregar por seed")
+    parser.add_argument("--time_table", type=str, default=None,
+                        help="Ruta para guardar tabla LaTeX de tiempos (mean±std). "
+                             "Para BACKPAS usa phase1_time+phase2_time.")
+    parser.add_argument("--time_table_label", type=str, default="BACKPAS",
+                        help="Etiqueta del método BACKPAS en la tabla de tiempos (default: BACKPAS)")
+    parser.add_argument("--aggregate", action="store_true",
+                        help="Agregar CSVs por seed antes de comparar "
+                             "(equivalente a --aggregate_dir con el mismo directorio)")
 
     args = parser.parse_args()
 
-    # Modo agregación de seeds
-    if args.aggregate_dir:
-        aggregate_seeds(args.aggregate_dir)
-        return
+    if not args.dir:
+        parser.error("--dir es requerido")
 
-    # Modo comparación normal — requiere --baseline y --backpas
-    if not args.baseline or not args.backpas:
-        parser.error("--baseline y --backpas son requeridos (o usa --aggregate_dir)")
+    # Modo agregación
+    if args.aggregate:
+        aggregate_seeds(args.dir)
+
+    # Auto-detectar CSVs
+    try:
+        baseline_csv = _find_csv(args.dir, "baseline")
+        backpas_csv  = _find_csv(args.dir, "backpas")
+    except FileNotFoundError as e:
+        parser.error(str(e))
+
+    print(f"baseline : {os.path.basename(baseline_csv)}")
+    print(f"backpas  : {os.path.basename(backpas_csv)}")
+
+    output_dir = args.output_dir or args.dir
 
     results = compare_experiments(
-        baseline_csv=args.baseline,
-        backbone_csv=args.backpas,
-        output_dir=args.output_dir
+        baseline_csv=baseline_csv,
+        backpas_csv=backpas_csv,
+        output_dir=output_dir,
     )
 
     if args.latex_table:
         generate_latex_table(
-            baseline_csv=args.baseline,
-            backbone_csv=args.backpas,
-            output_path=args.latex_table
+            baseline_csv=baseline_csv,
+            backpas_csv=backpas_csv,
+            output_path=args.latex_table,
         )
 
     if args.detailed_table:
         generate_detailed_table(
-            baseline_csv=args.baseline,
-            backpas_csv=args.backpas,
-            output_path=args.detailed_table
+            baseline_csv=baseline_csv,
+            backpas_csv=backpas_csv,
+            output_path=args.detailed_table,
+        )
+
+    if args.time_table:
+        generate_time_comparison_table(
+            baseline_csv=baseline_csv,
+            backpas_csv=backpas_csv,
+            output_path=args.time_table,
+            label=args.time_table_label,
         )
 
 

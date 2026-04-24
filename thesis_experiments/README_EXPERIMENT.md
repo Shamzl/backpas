@@ -184,6 +184,7 @@ kill <PID>       # Por PID
 ## Troubleshooting
 
 ### Error: "Módulos BACKPAS no disponibles"
+- [Mac solution torch](https://medium.com/@dessi.georgieva8/how-to-install-pytorch-geometric-with-apple-silicon-support-m1-m2-m3-39f1a5ad33b6)
 ```bash
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install torch_geometric torch_scatter torch_sparse

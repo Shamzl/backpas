@@ -26,6 +26,7 @@ def run_multi_seed(
     model_path: str,
     seeds: list,
     output_dir: str,
+    mode: str = "both",
     threads: int = 1,
     time_limit: float = 3600,
     trust_region_time: float = 300,
@@ -35,6 +36,9 @@ def run_multi_seed(
 ):
     os.makedirs(output_dir, exist_ok=True)
 
+    run_baseline = mode in ("both", "baseline")
+    run_backpas  = mode in ("both", "backpas")
+
     for seed in seeds:
         print(f"\n{'#'*60}")
         print(f"# SEED {seed}")
@@ -43,30 +47,32 @@ def run_multi_seed(
         seed_log_dir = os.path.join(log_dir, f"seed{seed}") if log_dir else None
 
         # ── Baseline ──────────────────────────────────────────────
-        run_batch_experiment(
-            instance_dir=instance_dir,
-            output_csv=os.path.join(output_dir, f"baseline_seed{seed}.csv"),
-            threads=threads,
-            time_limit=time_limit,
-            log_dir=seed_log_dir,
-            seed=seed,
-            use_backpas=False,
-        )
+        if run_baseline:
+            run_batch_experiment(
+                instance_dir=instance_dir,
+                output_csv=os.path.join(output_dir, f"baseline_seed{seed}.csv"),
+                threads=threads,
+                time_limit=time_limit,
+                log_dir=seed_log_dir,
+                seed=seed,
+                use_backpas=False,
+            )
 
         # ── BACKPAS ───────────────────────────────────────────────
-        run_batch_experiment(
-            instance_dir=instance_dir,
-            output_csv=os.path.join(output_dir, f"backpas_seed{seed}.csv"),
-            threads=threads,
-            time_limit=time_limit,
-            log_dir=seed_log_dir,
-            seed=seed,
-            use_backpas=True,
-            model_path=model_path,
-            trust_region_time=trust_region_time,
-            threshold=threshold,
-            alpha=alpha,
-        )
+        if run_backpas:
+            run_batch_experiment(
+                instance_dir=instance_dir,
+                output_csv=os.path.join(output_dir, f"backpas_seed{seed}.csv"),
+                threads=threads,
+                time_limit=time_limit,
+                log_dir=seed_log_dir,
+                seed=seed,
+                use_backpas=True,
+                model_path=model_path,
+                trust_region_time=trust_region_time,
+                threshold=threshold,
+                alpha=alpha,
+            )
 
     print(f"\nSeed(s) {seeds} completadas en: {output_dir}")
 
@@ -105,13 +111,27 @@ Ejemplos:
     parser.add_argument("--log_dir", type=str, default=None,
                         help="Directorio base para logs (se crea subdirectorio por seed)")
 
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--baseline", action="store_true",
+                            help="Ejecutar solo baseline")
+    mode_group.add_argument("--backpas", action="store_true",
+                            help="Ejecutar solo BACKPAS")
+
     args = parser.parse_args()
+
+    if args.baseline:
+        mode = "baseline"
+    elif args.backpas:
+        mode = "backpas"
+    else:
+        mode = "both"
 
     run_multi_seed(
         instance_dir=args.instance_dir,
         model_path=args.model,
         seeds=args.seeds,
         output_dir=args.output_dir,
+        mode=mode,
         threads=args.threads,
         time_limit=args.time_limit,
         trust_region_time=args.trust_region_time,

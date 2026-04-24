@@ -563,16 +563,6 @@ class GurobiMISExperiment:
         phase1_history = self.incumbent_history.copy()
         self.incumbent_history = []
 
-        # ---- OPCIÓN B: Modelo limpio (sin cortes de Fase 1) ----
-        # Carga el modelo desde cero para que Fase 2 parta de un estado idéntico
-        # al baseline. La única diferencia es el warmstart (incumbent de Fase 1).
-        # Esto permite aislar el efecto del warmstart de forma controlada.
-        model_phase2 = gp.read(instance_path)
-        if warmstart_solution:
-            for v in model_phase2.getVars():
-                if v.VarName in warmstart_solution:
-                    v.Start = warmstart_solution[v.VarName]
-
         # ---- OPCIÓN A: Reusar modelo de Fase 1 (con cortes heredados) ----
         # Preserva cortes (Gomory, cover, zero-half, etc.) y bounds de Fase 1.
         # Contra: los cortes generados dentro de la TR pueden no ser útiles
@@ -580,22 +570,45 @@ class GurobiMISExperiment:
         # Al modificar el modelo (remove + update), Gurobi invalida el incumbent,
         # por lo que se re-aplica el warmstart explícitamente.
         #
-        # model_phase2 = model_phase1
-        # for constr in tr_constraints:
-        #     model_phase2.remove(constr)
-        # for dv in delta_vars_added:
-        #     model_phase2.remove(dv)
-        # model_phase2.update()
-        # if warmstart_solution:
-        #     for v in model_phase2.getVars():
-        #         if v.VarName in warmstart_solution:
-        #             v.Start = warmstart_solution[v.VarName]
+        model_phase2 = model_phase1
+        for constr in tr_constraints:
+            model_phase2.remove(constr)
+        for dv in delta_vars_added:
+            model_phase2.remove(dv)
+        model_phase2.update()
+        if warmstart_solution:
+            for v in model_phase2.getVars():
+                if v.VarName in warmstart_solution:
+                    v.Start = warmstart_solution[v.VarName]
+
+        # ---- OPCIÓN B: Modelo limpio (sin cortes de Fase 1) ----
+        # Carga el modelo desde cero para que Fase 2 parta de un estado idéntico
+        # al baseline. La única diferencia es el warmstart (incumbent de Fase 1).
+        # Esto permite aislar el efecto del warmstart de forma controlada.
+        #
+        #model_phase2 = gp.read(instance_path)
+        #if warmstart_solution:
+        #    for v in model_phase2.getVars():
+        #        if v.VarName in warmstart_solution:
+        #            v.Start = warmstart_solution[v.VarName]
 
         # Configurar fase 2
         model_phase2.Params.Threads = self.threads
         model_phase2.Params.TimeLimit = remaining_time
         model_phase2.Params.MIPGap = self.mip_gap
         model_phase2.Params.Seed = self.seed
+
+        # Configuración de cortes para Fase 2 (modelo limpio sin cortes de Fase 1).
+        # Cortes genéricos que funcionan para MIS, MVC y CA.
+        # El objetivo es compensar la ausencia de cortes heredados de Fase 1 y
+        # enfocar Gurobi en cerrar el gap dado que ya tiene un buen incumbent (warmstart).
+        # model_phase2.Params.CutPasses    = 10  # más rondas de cortes en el nodo raíz
+        # model_phase2.Params.MIRCuts      = 2   # Mixed Integer Rounding, genérico
+        # model_phase2.Params.ZeroHalfCuts = 2   # cortes de paridad, genérico
+        # model_phase2.Params.ImpliedCuts  = 2   # implicaciones lógicas entre binarias
+        model_phase2.Params.Heuristics = 0.0   # desactivar heurísticas: ya tenemos
+                                                # buen incumbent del warmstart, toda
+                                                # la energía va a cerrar el gap
 
         if self.log_dir:
             log_file = os.path.join(self.log_dir, f"{instance_name}_backpas_phase2.log")
