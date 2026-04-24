@@ -6,8 +6,6 @@ pandas==2.3.3
 
 # Machine Learning
 torch==2.8.0
-torchvision==0.23.0
-torchaudio==2.8.0
 torch_geometric==2.7.0
 # torch_scatter y torch_sparse requieren instalación manual desde PyG:
 #  pip install torch_scatter torch_sparse torch-cluster torch-spline-conv -f https://data.pyg.org/whl/torch-2.8.0+cpu.html
