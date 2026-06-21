@@ -23,7 +23,7 @@ python -c "import torch, gurobipy, networkx; print('OK')"
 
 You need:
 
-- A valid **Gurobi** license (academic licenses are free).
+- A valid **Gurobi** license.
 - The trained model at
   `wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth`.
 - A set of MIS test instances (`.lp` or `.mps`).
