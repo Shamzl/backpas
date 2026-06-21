@@ -46,20 +46,27 @@ def _agg_baseline(directory: str) -> pd.DataFrame:
     df = _load_seeds(directory, "baseline")
     grp = df.groupby("instance_name")
     return pd.DataFrame({
-        "baseline_mean":      grp["gurobi_runtime"].mean(),
-        "baseline_std":       grp["gurobi_runtime"].std(ddof=1).fillna(0.0),
-        "baseline_n_optimal": grp["status_name"].apply(lambda x: (x == "OPTIMAL").sum()),
+        "baseline_mean":         grp["runtime"].mean(),
+        "baseline_std":          grp["runtime"].std(ddof=1).fillna(0.0),
+        "baseline_gurobi_mean":  grp["gurobi_runtime"].mean(),
+        "baseline_n_optimal":    grp["status_name"].apply(lambda x: (x == "OPTIMAL").sum()),
     }).reset_index()
 
 
 def _agg_backpas(directory: str) -> pd.DataFrame:
     df = _load_seeds(directory, "backpas")
-    df["backpas_time"] = df["phase1_time"] + df["phase2_time"]
+    df["backpas_gurobi_time"] = df["phase1_time"] + df["phase2_time"]
     grp = df.groupby("instance_name")
     return pd.DataFrame({
-        "backpas_mean":      grp["backpas_time"].mean(),
-        "backpas_std":       grp["backpas_time"].std(ddof=1).fillna(0.0),
-        "backpas_n_optimal": grp["status_name"].apply(lambda x: (x == "OPTIMAL").sum()),
+        "backpas_mean":          grp["runtime"].mean(),
+        "backpas_std":           grp["runtime"].std(ddof=1).fillna(0.0),
+        "backpas_phase1_mean":   grp["phase1_time"].mean(),
+        "backpas_phase1_std":    grp["phase1_time"].std(ddof=1).fillna(0.0),
+        "backpas_phase2_mean":   grp["phase2_time"].mean(),
+        "backpas_phase2_std":    grp["phase2_time"].std(ddof=1).fillna(0.0),
+        "backpas_gurobi_mean":   grp["backpas_gurobi_time"].mean(),
+        "backpas_gurobi_std":    grp["backpas_gurobi_time"].std(ddof=1).fillna(0.0),
+        "backpas_n_optimal":     grp["status_name"].apply(lambda x: (x == "OPTIMAL").sum()),
     }).reset_index()
 
 
