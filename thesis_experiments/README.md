@@ -72,21 +72,12 @@ pip install -r ../requirements.txt
 
 `torch_scatter` and `torch_sparse` must match your installed torch + CUDA build:
 
-```bash
-pip install torch_scatter torch_sparse -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
-```
-
-CPU-only (e.g. Apple Silicon) is fully supported:
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install torch_geometric torch_scatter torch_sparse
-```
+For CPU-only setups (e.g. Apple Silicon), follow the official PyTorch Geometric
+installation guide: <https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html>
 
 ### Gurobi license
 
-A valid Gurobi license is required. Academic licenses are free:
-<https://www.gurobi.com/academia/academic-program-and-licenses/>
+A valid Gurobi license is required. :
 
 The experiments in the paper used **Gurobi 13.0.0**, **Python 3.12**, and
 **PyTorch 2.8**.
@@ -134,6 +125,8 @@ python src/analytics/make_primal_table.py --base_dir results/metrics
 
 > `MIPGap` is fixed to `0` so the solver must **prove** optimality rather than
 > stop at a tolerance, and `Threads=1` keeps the search reproducible.
+
+> To train the model from scratch (rather than using the provided checkpoint), refer to the original BACKPAS documentation: <https://github.com/bryan-alvarado-ulloa/backpas>.
 
 ## Collected metrics
 

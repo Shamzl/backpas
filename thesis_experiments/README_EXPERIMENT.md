@@ -28,9 +28,6 @@ You need:
   `wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth`.
 - A set of MIS test instances (`.lp` or `.mps`).
 
-> Run long jobs with `python -u ... | nohup` to avoid output buffering (see
-> [Running on a server](#running-on-a-server)).
-
 ## Paper hyperparameters (MIS)
 
 | Parameter             | Symbol | Value      | Description                                |
@@ -187,38 +184,12 @@ Additional BACKPAS columns:
 3. **Less algorithmic work and/or wall-clock** — especially on hard instances,
    where the warm-start absorbs the preprocessing overhead.
 
-## Running on a server
-
-```bash
-# Copy the project to the server
-scp -r <project_dir> user@server:/destination/
-
-# Launch in the background (note the -u flag for unbuffered output)
-nohup python -u src/run_multi_seed.py \
-    --instance_dir <path/to/test/instances> \
-    --model wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth \
-    --seeds 0 1 2 3 4 \
-    --output_dir results/metrics/my_run \
-    --threshold 0.6237 --alpha -0.8419 \
-    --trust_region_time 300 --time_limit 3600 \
-    > run.log 2>&1 &
-
-# Monitor
-tail -f run.log
-ps aux | grep run_multi_seed
-```
-
 ## Troubleshooting
 
 **`Module BACKPAS not available` / torch import errors.**
-On Apple Silicon, see this
-[install guide](https://medium.com/@dessi.georgieva8/how-to-install-pytorch-geometric-with-apple-silicon-support-m1-m2-m3-39f1a5ad33b6),
-then:
-
-```bash
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install torch_geometric torch_scatter torch_sparse
-```
+Install PyTorch and PyTorch Geometric following the official guide (it covers
+CPU-only and Apple Silicon setups):
+<https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html>
 
 **`Version number is X, license is for version Y`.**
 Install the `gurobipy` build matching your license:
