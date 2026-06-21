@@ -1,214 +1,170 @@
-# Experimentos de Tesis: Aceleración de Gurobi con Backbone
+# Thesis Experiments — Warmstarting Gurobi through BACKPAS (MIS)
 
-Este directorio contiene los scripts y datos para los experimentos de la tesis:
+This directory contains the code, data layout, and instructions to reproduce the
+experiments of the paper:
 
-**"Aceleración de la Demostración de Optimalidad en Gurobi mediante Predicción de Variables Backbone para el Problema de Maximum Independent Set"**
+> **Warmstarting Gurobi through BACKPAS: An experimental evaluation on MIS**
 
-## Estructura del Directorio
+The study evaluates whether a GNN-guided, two-phase warm-start can accelerate
+**optimality certification** (proving the optimum, not merely finding good
+solutions) for the Maximum Independent Set (MIS) problem solved with Gurobi.
+
+## What the experiment does
+
+We compare two ways of solving each MIS instance to proven optimality:
+
+1. **Baseline** — plain Gurobi on the original instance.
+2. **BACKPAS** — a two-phase scheme:
+   - **Phase 1**: a GNN predicts which variables belong to the *backbone*
+     (variables fixed across all optimal solutions). These predictions define a
+     **trust region** that restricts the search, and Gurobi solves the
+     restricted instance under a short time budget (`--trust_region_time`),
+     producing a strong incumbent.
+   - **Phase 2**: Gurobi solves the **original** instance using the Phase-1
+     incumbent as a **warm-start**, recovering the global optimality guarantee
+     that the restricted instance cannot provide on its own.
+
+Each instance is run with multiple seeds so that the only source of variability
+is Gurobi's internal stochasticity — the GNN predictions are deterministic.
+
+We report two complementary views:
+
+- **Algorithmic work** (solver time only) — does the trust region + warm-start
+  help Gurobi close the gap faster?
+- **Wall-clock** (end-to-end, GNN overhead included) — is BACKPAS worth it in
+  practice?
+
+plus the **primal integral** (anytime behavior), **Wilcoxon** significance tests,
+**Dolan–Moré performance profiles**, and **cactus plots**.
+
+## Directory layout
 
 ```
 thesis_experiments/
-├── README.md                 # Este archivo
+├── README.md                        # This file (overview)
+├── README_EXPERIMENT.md             # Detailed step-by-step run guide
 ├── src/
-│   ├── generate_mis_instances.py   # Generador de instancias MIS
-│   ├── run_gurobi_experiment.py    # Ejecutor de experimentos Gurobi
-│   ├── generate_trust_region.py    # Generador de trust regions
-│   └── analyze_results.py          # Análisis estadístico
-├── instances/
-│   ├── baseline/             # Instancias MIS originales
-│   └── with_backbone/        # Instancias con trust region
+│   ├── run_gurobi_experiment.py     # Core driver (BASELINE and BACKPAS modes)
+│   ├── run_gurobi_baseline.py       # Baseline-only convenience driver
+│   ├── run_multi_seed.py            # Runs an instance set across several seeds
+│   └── analytics/
+│       ├── make_table.py            # Aggregate runtimes -> time_table.csv
+│       ├── make_primal_table.py     # Aggregate primal integral + Wilcoxon
+│       ├── combine_seeds.py         # Merge per-seed CSVs
+│       └── analyze_results.py       # Statistical analysis helpers
 ├── results/
-│   ├── logs/                 # Logs de Gurobi
-│   └── metrics/              # CSVs con métricas
-├── thesis/                   # Documento LaTeX
-│   ├── chapters/
-│   └── figures/
-└── scripts/
-    └── run_experiments.sh    # Script para servidor SSH
+│   ├── metrics/                     # Per-run CSVs and aggregated tables
+│   ├── logs/                        # Gurobi logs
+│   └── analysis/                    # Derived analysis artifacts
+└── thesis/                          # LaTeX sources, figures, and tables
+    ├── chapters/
+    ├── figures/
+    └── tables/
 ```
 
-## Requisitos
+## Requirements
 
-### Dependencias Python
-```bash
-pip install networkx gurobipy pandas numpy scipy
-```
-
-### Dependencias para Trust Region (opcional)
-Si vas a generar trust regions, necesitas el entorno del repositorio BACKPAS:
-```bash
-pip install torch pyscipopt
-```
-
-### Licencia Gurobi
-Necesitas una licencia de Gurobi válida. Para académicos:
-https://www.gurobi.com/academia/academic-program-and-licenses/
-
-## Guía Rápida
-
-### Paso 1: Generar Instancias MIS
+### Python dependencies
 
 ```bash
-cd src/
-
-# Generar 5 instancias pequeñas para prueba (100 nodos)
-python generate_mis_instances.py \
-    --n_instances 5 \
-    --n_nodes 100 \
-    --output_dir ../instances/baseline/small \
-    --seed 42
-
-# Generar 10 instancias medianas (500 nodos)
-python generate_mis_instances.py \
-    --n_instances 10 \
-    --n_nodes 500 \
-    --output_dir ../instances/baseline/medium \
-    --seed 42
-
-# Generar 20 instancias grandes para experimentos finales (2000 nodos)
-python generate_mis_instances.py \
-    --n_instances 20 \
-    --n_nodes 2000 \
-    --output_dir ../instances/baseline/large \
-    --seed 42
+pip install -r ../requirements.txt
 ```
 
-### Paso 2: Ejecutar Baseline (sin backbone)
+`torch_scatter` and `torch_sparse` must match your installed torch + CUDA build:
 
 ```bash
-# Ejecutar una sola instancia (para probar)
-python run_gurobi_experiment.py \
-    --instance ../instances/baseline/small/mis_100n_000.lp \
-    --time_limit 60
-
-# Ejecutar batch de instancias
-python run_gurobi_experiment.py \
-    --instance_dir ../instances/baseline/small \
-    --output_csv ../results/metrics/baseline_small.csv \
-    --time_limit 300 \
-    --threads 1
+pip install torch_scatter torch_sparse -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 ```
 
-### Paso 3: Generar Trust Regions (con modelo BACKPAS)
+CPU-only (e.g. Apple Silicon) is fully supported:
 
 ```bash
-# Procesar instancias con el modelo backbone
-python generate_trust_region.py \
-    --model_path /ruta/a/best_model.pth \
-    --input_dir ../instances/baseline/small \
-    --output_dir ../instances/with_backbone/small \
-    --method thresholded_expected_error \
-    --threshold 0.7 \
-    --alpha 0.0
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install torch_geometric torch_scatter torch_sparse
 ```
 
-### Paso 4: Ejecutar con Backbone
+### Gurobi license
+
+A valid Gurobi license is required. Academic licenses are free:
+<https://www.gurobi.com/academia/academic-program-and-licenses/>
+
+The experiments in the paper used **Gurobi 13.0.0**, **Python 3.12**, and
+**PyTorch 2.8**.
+
+### Trained model
+
+BACKPAS needs the trained GNN checkpoint:
+
+```
+wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth
+```
+
+## Quick start (reproduce the paper)
+
+The full reproduction recipe — with the exact tuned hyperparameters, the
+multi-seed runner, and the table generators — lives in
+[`README_EXPERIMENT.md`](README_EXPERIMENT.md). The short version:
 
 ```bash
-python run_gurobi_experiment.py \
-    --instance_dir ../instances/with_backbone/small \
-    --output_csv ../results/metrics/backbone_small.csv \
-    --time_limit 300 \
-    --threads 1
+# 1) Run both Baseline and BACKPAS over an instance set across 5 seeds
+python src/run_multi_seed.py \
+    --instance_dir <path/to/test/instances> \
+    --model wkdir/MIS/ml_training/graph_with_literals_8_GTR/best_model.pth \
+    --seeds 0 1 2 3 4 \
+    --output_dir results/metrics/my_run \
+    --threshold 0.6237 --alpha -0.8419 \
+    --trust_region_time 300 --time_limit 3600
+
+# 2) Aggregate runtimes into a table
+python src/analytics/make_table.py --dir results/metrics/my_run
+
+# 3) Aggregate the primal integral and run the paired Wilcoxon test
+python src/analytics/make_primal_table.py --base_dir results/metrics
 ```
 
-### Paso 5: Analizar Resultados
+## Tuned hyperparameters (paper values)
 
-```bash
-python analyze_results.py \
-    --baseline ../results/metrics/baseline_small.csv \
-    --backbone ../results/metrics/backbone_small.csv \
-    --output_dir ../results/analysis
-```
+| Parameter             | Symbol | Value      | Meaning                                            |
+|-----------------------|--------|------------|----------------------------------------------------|
+| `--threshold`         | θ      | `0.6237`   | Confidence cutoff for selecting backbone variables |
+| `--alpha`             | α      | `-0.8419`  | Trust-region tolerance                             |
+| `--trust_region_time` | —      | `300`      | Phase-1 duration (seconds)                         |
+| `--time_limit`        | —      | `3600`     | Total per-instance budget (seconds)                |
+| `--threads`           | —      | `1`        | Single-threaded for deterministic, fair runs       |
 
-## Parámetros Importantes
+> `MIPGap` is fixed to `0` so the solver must **prove** optimality rather than
+> stop at a tolerance, and `Threads=1` keeps the search reproducible.
 
-### Generador de Instancias (`generate_mis_instances.py`)
+## Collected metrics
 
-| Parámetro | Descripción | Default |
-|-----------|-------------|---------|
-| `--n_instances` | Número de instancias | 10 |
-| `--n_nodes` | Nodos por instancia | 500 |
-| `--graph_type` | `erdos_renyi` o `barabasi_albert` | `erdos_renyi` |
-| `--edge_prob` | Probabilidad de arista | 0.5 |
-| `--seed` | Semilla para reproducibilidad | None |
+| Metric             | Description                                                        |
+|--------------------|-------------------------------------------------------------------|
+| `runtime`          | Total wall-clock time (Python), including all GNN overhead         |
+| `gurobi_runtime`   | Solver-internal time reported by Gurobi                            |
+| `phase1_time`      | Phase-1 (trust region) duration — BACKPAS only                     |
+| `phase2_time`      | Phase-2 (warm-started original instance) duration — BACKPAS only   |
+| `primal_integral`  | Time-integral of the normalized primal gap (lower is better)       |
+| `obj_val`          | Objective value of the returned solution                          |
+| `obj_bound`        | Best dual bound                                                    |
+| `mip_gap`          | Final optimality gap                                              |
+| `status_name`      | `OPTIMAL` / `TIME_LIMIT` / ...                                     |
 
-### Ejecutor Gurobi (`run_gurobi_experiment.py`)
+> The **primal integral** is measured on the solver's internal clock and
+> therefore **excludes** the GNN preprocessing (~0.35 s). It belongs with the
+> *algorithmic-work* comparison, not the wall-clock one.
 
-| Parámetro | Descripción | Default |
-|-----------|-------------|---------|
-| `--threads` | Hilos de Gurobi | 1 |
-| `--time_limit` | Límite de tiempo (seg) | 3600 |
-| `--mip_gap` | Gap objetivo | 0.0 |
+For the thesis tables: baseline uses `gurobi_runtime`; BACKPAS uses `runtime`
+(total wall-clock). Standard deviation across seeds uses `ddof=1` (sample std).
 
-### Trust Region (`generate_trust_region.py`)
+## Acknowledgments
 
-| Parámetro | Descripción | Default |
-|-----------|-------------|---------|
-| `--method` | Método de construcción | `thresholded_expected_error` |
-| `--threshold` | Umbral θ | 0.7 |
-| `--alpha` | Parámetro α | 0.0 |
+This work builds directly on the original **BACKPAS** implementation by
+Bryan Alvarado Ulloa:
 
-## Calibración de Tamaño de Instancias
+> <https://github.com/bryan-alvarado-ulloa/backpas>
 
-Para encontrar el tamaño de instancia donde Gurobi tarde ~1 hora:
-
-```bash
-# Probar con diferentes tamaños
-for nodes in 500 1000 1500 2000 2500; do
-    python generate_mis_instances.py \
-        --n_instances 3 \
-        --n_nodes $nodes \
-        --output_dir ../instances/calibration/${nodes}n \
-        --seed 42
-    
-    python run_gurobi_experiment.py \
-        --instance_dir ../instances/calibration/${nodes}n \
-        --output_csv ../results/metrics/calibration_${nodes}n.csv \
-        --time_limit 3600
-done
-```
-
-## Ejecutar en Servidor SSH
-
-1. Copiar este directorio al servidor:
-```bash
-scp -r thesis_experiments/ usuario@servidor:/ruta/destino/
-```
-
-2. Ejecutar en background con nohup:
-```bash
-nohup python run_gurobi_experiment.py \
-    --instance_dir ../instances/baseline/large \
-    --output_csv ../results/metrics/baseline_large.csv \
-    --time_limit 3600 \
-    > experiment.log 2>&1 &
-```
-
-3. Verificar progreso:
-```bash
-tail -f experiment.log
-```
-
-## Métricas Recopiladas
-
-| Métrica | Descripción |
-|---------|-------------|
-| `runtime` | Tiempo total de ejecución |
-| `gurobi_runtime` | Tiempo reportado por Gurobi |
-| `obj_val` | Valor objetivo óptimo |
-| `obj_bound` | Cota del valor objetivo |
-| `mip_gap` | Gap de optimalidad |
-| `n_nodes` | Nodos del árbol explorados |
-| `n_solutions` | Soluciones factibles encontradas |
-| `primal_integral` | Integral primal (aproximado) |
-
-## Notas
-
-- **Un solo hilo**: Todos los experimentos deben usar `--threads 1` para comparación justa.
-- **Gap = 0**: Usamos `--mip_gap 0.0` para garantizar optimalidad demostrada.
-- **Reproducibilidad**: Usar siempre la misma semilla (`--seed 42`) para generar instancias.
-- **Time limit**: Ajustar según la capacidad de cómputo disponible.
-
-## Contacto
-
+We are grateful for that codebase, which provided the GNN architecture
+(literal-based bipartite Graph Transformer), the trust-region construction, and
+the trained model that make these experiments possible. This repository extends
+it with the two-phase warm-start driver, the multi-seed experiment runner, and
+the statistical analysis used in the paper.
